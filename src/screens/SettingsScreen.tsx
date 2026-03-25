@@ -9,15 +9,42 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "../theme/ThemeContext";
 import { themes, freeThemes, type ThemeName } from "../theme/index";
 import { useDayForgeStore } from "../store/useDayForgeStore";
+import { getDatabase } from "../database/db";
 
 export default function SettingsScreen() {
   const { theme, themeName, setTheme } = useTheme();
-  const { updateUserSettings } = useDayForgeStore();
+  const { updateUserSettings, initialise } = useDayForgeStore();
+
+  const handleClearData = async () => {
+    Alert.alert(
+      "Clear All Data",
+      "This will permanently delete all tasks and schedule data. Your settings and categories will be kept. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear All Tasks",
+          style: "destructive",
+          onPress: async () => {
+            const db = getDatabase();
+            await db.execAsync(`
+            DELETE FROM task_instances;
+            DELETE FROM recurrence_exceptions;
+            DELETE FROM recurrence_rules;
+            DELETE FROM tasks;
+            DELETE FROM daily_scores;
+          `);
+            await initialise();
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <SafeAreaView
@@ -223,6 +250,31 @@ export default function SettingsScreen() {
               }}
             >
               Reset Onboarding
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={handleClearData}
+            style={[
+              s.card,
+              {
+                backgroundColor: theme.colors.dangerSurface,
+                borderColor: theme.colors.danger,
+                marginBottom: 0,
+                marginTop: 8,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Clear all task data"
+          >
+            <Text
+              style={{
+                color: theme.colors.danger,
+                fontFamily: theme.fonts.body,
+                fontSize: theme.fontSizes.md,
+              }}
+            >
+              Clear All Tasks
             </Text>
           </TouchableOpacity>
         </View>

@@ -8,10 +8,10 @@ export default function CalendarScreen() {
   return (
     <SafeAreaView style={[s.screen, { backgroundColor: theme.colors.background }]}>
       <Text style={[s.title, { color: theme.colors.accent, fontFamily: theme.fonts.heading }]}>
-        Calendar
+        Dashboard
       </Text>
       <Text style={[s.sub, { color: theme.colors.textSecondary, fontFamily: theme.fonts.body }]}>
-        Monthly view coming soon.
+        Dashboard view coming soon.
       </Text>
     </SafeAreaView>
   );

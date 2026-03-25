@@ -1,6 +1,4 @@
-// src/store/useDayForgeStore.ts
-// DayForge state management using React Context + useReducer
-// Drop-in replacement for the Zustand store — same API, no external dependencies
+// src/store/useDayForgeStore.tsx
 
 import React, { createContext, useContext, useReducer, useCallback } from 'react';
 import { getUser, updateUser, completeOnboarding, type User } from '../database/queries/userQueries';
@@ -78,21 +76,42 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-type SlottedTask = { task: Task; rule: RecurrenceRule; startMins: number; endMins: number; displayStart: number; displayEnd: number; };
+type SlottedTask = {
+  task: Task;
+  rule: RecurrenceRule;
+  startMins: number;
+  endMins: number;
+  displayStart: number;
+  displayEnd: number;
+  hasConflict?: boolean;
+};
 
-function buildScheduleAlgo(tasks: Task[], rules: Map<string, RecurrenceRule>, dateStr: string, dayStartMins: number, dayEndMins: number): SlottedTask[] {
+function buildScheduleAlgo(
+  tasks: Task[],
+  rules: Map<string, RecurrenceRule>,
+  dateStr: string,
+  dayStartMins: number,
+  dayEndMins: number,
+  effectiveStartMins: number,
+): SlottedTask[] {
   const tierOrder: Record<string, number> = { high: 0, normal: 1, low: 2 };
+
   const occurring = tasks.filter(task => {
     const rule = rules.get(task.id);
     if (!rule) return false;
     if (task.pausedUntil && dateStr <= task.pausedUntil) return false;
     return taskOccursOn(rule, dateStr);
   });
+
   const fixed = occurring.filter(t => t.priority === 'fixed').sort((a, b) => timeToMinutes(a.time || '00:00') - timeToMinutes(b.time || '00:00'));
   const flexible = occurring.filter(t => t.priority === 'flexible').sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
   const optional = occurring.filter(t => t.priority === 'optional').sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
+
   const scheduled: SlottedTask[] = [];
-  const overlaps = (start: number, end: number) => scheduled.some(s => !(end <= s.startMins || start >= s.endMins));
+
+  const overlaps = (start: number, end: number) =>
+    scheduled.some(s => !(end <= s.startMins || start >= s.endMins));
+
   const tryPlace = (task: Task, rule: RecurrenceRule, preferredStart: number): boolean => {
     const travelTo = task.travelTo || 0;
     const travelFrom = task.travelFrom || 0;
@@ -103,27 +122,62 @@ function buildScheduleAlgo(tasks: Task[], rules: Map<string, RecurrenceRule>, da
     scheduled.push({ task, rule, startMins: blockStart, endMins: blockEnd, displayStart: preferredStart, displayEnd: preferredStart + task.duration });
     return true;
   };
-  for (const task of fixed) { const rule = rules.get(task.id)!; tryPlace(task, rule, timeToMinutes(task.time || '09:00')); }
+
+  // Fixed tasks — placed at exact time, conflicts detected and both marked
+  const conflictingTaskIds = new Set<string>();
+
+  for (const task of fixed) {
+    const rule = rules.get(task.id)!;
+    const timeMins = timeToMinutes(task.time || '09:00');
+    const travelTo = task.travelTo || 0;
+    const travelFrom = task.travelFrom || 0;
+    const bufferAfter = task.bufferAfter || 10;
+    const blockStart = timeMins - travelTo;
+    const blockEnd = timeMins + task.duration + travelFrom + bufferAfter;
+
+    if (overlaps(blockStart, blockEnd)) {
+      conflictingTaskIds.add(task.id);
+      const conflicting = scheduled.find(s => !(blockEnd <= s.startMins || blockStart >= s.endMins));
+      if (conflicting) conflictingTaskIds.add(conflicting.task.id);
+      scheduled.push({ task, rule, startMins: blockStart, endMins: blockEnd, displayStart: timeMins, displayEnd: timeMins + task.duration });
+    } else {
+      tryPlace(task, rule, timeMins);
+    }
+  }
+
+  // Flexible tasks — never placed before effectiveStartMins
   for (const task of flexible) {
     const rule = rules.get(task.id)!;
-    const preferred = task.preferredTime ? timeToMinutes(task.preferredTime) : dayStartMins;
-    const earliest = task.earliestStart ? timeToMinutes(task.earliestStart) : dayStartMins;
+    const rawPreferred = task.preferredTime ? timeToMinutes(task.preferredTime) : effectiveStartMins;
+    const preferred = Math.max(rawPreferred, effectiveStartMins);
+    const rawEarliest = task.earliestStart ? timeToMinutes(task.earliestStart) : dayStartMins;
+    const earliest = Math.max(rawEarliest, effectiveStartMins);
     const latest = task.latestEnd ? timeToMinutes(task.latestEnd) - task.duration : dayEndMins - task.duration;
+
     let placed = false;
     for (let offset = 0; offset <= 120; offset += 15) {
       if (preferred + offset <= latest && preferred + offset >= earliest && tryPlace(task, rule, preferred + offset)) { placed = true; break; }
-      if (offset > 0 && preferred - offset >= earliest && preferred - offset <= latest && tryPlace(task, rule, preferred - offset)) { placed = true; break; }
+      if (offset > 0 && preferred - offset >= earliest && preferred - offset >= effectiveStartMins && preferred - offset <= latest && tryPlace(task, rule, preferred - offset)) { placed = true; break; }
     }
     if (!placed) { for (let t = earliest; t <= latest; t += 15) { if (tryPlace(task, rule, t)) break; } }
   }
+
+  // Optional tasks — never placed before effectiveStartMins
   for (const task of optional) {
     const rule = rules.get(task.id)!;
-    const preferred = task.preferredTime ? timeToMinutes(task.preferredTime) : dayStartMins;
+    const rawPreferred = task.preferredTime ? timeToMinutes(task.preferredTime) : effectiveStartMins;
+    const preferred = Math.max(rawPreferred, effectiveStartMins);
     for (let offset = 0; offset <= 240; offset += 15) {
       if (tryPlace(task, rule, preferred + offset)) break;
       if (offset > 0 && tryPlace(task, rule, preferred - offset)) break;
     }
   }
+
+  // Mark conflicting tasks
+  for (const slot of scheduled) {
+    if (conflictingTaskIds.has(slot.task.id)) slot.hasConflict = true;
+  }
+
   return scheduled.sort((a, b) => a.displayStart - b.displayStart);
 }
 
@@ -160,19 +214,34 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
     const dayStartMins = timeToMinutes(user.dayStart);
     const dayEndMins = timeToMinutes(user.dayEnd);
     const todayDate = todayString();
+
+    const now = new Date();
+    const currentTimeMins = now.getHours() * 60 + now.getMinutes();
+    const effectiveStartMins = Math.max(dayStartMins, currentTimeMins);
+
     const rules = new Map<string, RecurrenceRule>();
     for (const task of tasks) {
       const rule = await getRecurrenceRule(task.id);
       if (rule) rules.set(task.id, rule);
     }
-    const slotted = buildScheduleAlgo(tasks, rules, todayDate, dayStartMins, dayEndMins);
+
+    const slotted = buildScheduleAlgo(tasks, rules, todayDate, dayStartMins, dayEndMins, effectiveStartMins);
+
     const categoryMap = new Map(categories.map(c => [c.id, c]));
     const scheduledTasks: ScheduledTask[] = [];
+
     for (const slot of slotted) {
-      const instance = await createInstance({ taskId: slot.task.id, date: todayDate, scheduledStart: minutesToTime(slot.displayStart), scheduledEnd: minutesToTime(slot.displayEnd) });
+      const instance = await createInstance({
+        taskId: slot.task.id,
+        date: todayDate,
+        scheduledStart: minutesToTime(slot.displayStart),
+        scheduledEnd: minutesToTime(slot.displayEnd),
+        hasConflict: slot.hasConflict ?? false,
+      });
       const category = categoryMap.get(slot.task.categoryId);
       if (category) scheduledTasks.push({ instance, task: slot.task, category, recurrenceRule: slot.rule });
     }
+
     const score = await getScoreForDate(todayDate);
     dispatch({ type: 'SET_SCHEDULE', payload: { schedule: scheduledTasks, score } });
   }, []);
@@ -192,9 +261,7 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: 'SET_CATEGORIES', payload: categories });
       dispatch({ type: 'SET_TASKS', payload: tasks });
       dispatch({ type: 'SET_LOADING', payload: false });
-      if (user?.onboarded && user && categories && tasks) {
-        await buildScheduleFromData(tasks, categories, user);
-      }
+      if (user?.onboarded && user && categories && tasks) await buildScheduleFromData(tasks, categories, user);
     } catch (error) {
       dispatch({ type: 'SET_LOADING', payload: false });
       dispatch({ type: 'SET_ERROR', payload: 'Failed to initialise' });

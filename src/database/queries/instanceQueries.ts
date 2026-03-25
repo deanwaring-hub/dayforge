@@ -15,6 +15,7 @@ export type TaskInstance = {
   snoozedUntil?: string;
   completedAt?: string;
   notes?: string;
+  hasConflict: boolean;
   createdAt: string;
 };
 
@@ -29,6 +30,7 @@ type InstanceRow = {
   snoozed_until: string | null;
   completed_at: string | null;
   notes: string | null;
+  has_conflict: number;
   created_at: string;
 };
 
@@ -44,6 +46,7 @@ function rowToInstance(row: InstanceRow): TaskInstance {
     snoozedUntil: row.snoozed_until ?? undefined,
     completedAt: row.completed_at ?? undefined,
     notes: row.notes ?? undefined,
+    hasConflict: row.has_conflict === 1,
     createdAt: row.created_at,
   };
 }
@@ -74,15 +77,16 @@ export async function createInstance(data: {
   date: string;
   scheduledStart: string;
   scheduledEnd: string;
+  hasConflict?: boolean;
 }): Promise<TaskInstance> {
   const db = getDatabase();
   const id = generateId();
 
   await db.runAsync(
     `INSERT OR REPLACE INTO task_instances
-      (id, task_id, date, scheduled_start, scheduled_end, status, snooze_count)
-     VALUES (?, ?, ?, ?, ?, 'pending', 0)`,
-    [id, data.taskId, data.date, data.scheduledStart, data.scheduledEnd]
+      (id, task_id, date, scheduled_start, scheduled_end, status, snooze_count, has_conflict)
+     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
+    [id, data.taskId, data.date, data.scheduledStart, data.scheduledEnd, data.hasConflict ? 1 : 0]
   );
 
   const created = await getInstanceByTaskAndDate(data.taskId, data.date);
@@ -126,7 +130,6 @@ export async function incrementSnoozeCount(id: string): Promise<number> {
 }
 
 export async function markDayIncomplete(date: string): Promise<void> {
-  // Called at end of day — marks any pending instances as incomplete
   const db = getDatabase();
   await db.runAsync(
     `UPDATE task_instances SET status = 'incomplete'
@@ -134,4 +137,3 @@ export async function markDayIncomplete(date: string): Promise<void> {
     [date]
   );
 }
-

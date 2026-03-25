@@ -3,7 +3,7 @@
 // Opens SQLite connection and creates all tables on first run
 // Safe to run on every app start — CREATE TABLE IF NOT EXISTS means no data loss
 
-import * as SQLite from 'expo-sqlite';
+import * as SQLite from "expo-sqlite";
 
 // ─── DATABASE CONNECTION ──────────────────────────────────────────────────────
 
@@ -11,7 +11,7 @@ let db: SQLite.SQLiteDatabase | null = null;
 
 export function getDatabase(): SQLite.SQLiteDatabase {
   if (!db) {
-    db = SQLite.openDatabaseSync('dayforge.db');
+    db = SQLite.openDatabaseSync("dayforge.db");
   }
   return db;
 }
@@ -34,7 +34,6 @@ export async function initialiseDatabase(): Promise<void> {
 // ─── CREATE TABLES ────────────────────────────────────────────────────────────
 
 async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
-
   // ── users ──────────────────────────────────────────────────────────────────
   // Single user app — only one row ever exists
   await database.execAsync(`
@@ -205,19 +204,23 @@ async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
         VALUES (1, '06:00', '21:00', 'slate', 0);
       `,
     },
+    {
+      version: 3,
+      sql: `ALTER TABLE task_instances ADD COLUMN has_conflict INTEGER NOT NULL DEFAULT 0;`,
+    },
   ];
 
   for (const migration of migrations) {
     const already = await database.getFirstAsync<{ version: number }>(
-      'SELECT version FROM schema_migrations WHERE version = ?',
-      [migration.version]
+      "SELECT version FROM schema_migrations WHERE version = ?",
+      [migration.version],
     );
 
     if (!already) {
       await database.execAsync(migration.sql);
       await database.runAsync(
-        'INSERT INTO schema_migrations (version) VALUES (?)',
-        [migration.version]
+        "INSERT INTO schema_migrations (version) VALUES (?)",
+        [migration.version],
       );
       console.log(`Migration ${migration.version} applied.`);
     }
@@ -243,7 +246,7 @@ export function formatDateString(date: Date): string {
 
 // Convert HH:MM to total minutes since midnight
 export function timeToMinutes(time: string): number {
-  const [h, m] = time.split(':').map(Number);
+  const [h, m] = time.split(":").map(Number);
   return h * 60 + m;
 }
 
@@ -251,5 +254,5 @@ export function timeToMinutes(time: string): number {
 export function minutesToTime(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
