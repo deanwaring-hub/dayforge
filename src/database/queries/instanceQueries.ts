@@ -80,17 +80,30 @@ export async function createInstance(data: {
   hasConflict?: boolean;
 }): Promise<TaskInstance> {
   const db = getDatabase();
-  const id = generateId();
 
+  // Check if instance already exists for this task on this date
+  const existing = await getInstanceByTaskAndDate(data.taskId, data.date);
+  if (existing) {
+    // Update the scheduled time and conflict status but preserve completion status
+    await db.runAsync(
+      `UPDATE task_instances 
+       SET scheduled_start = ?, scheduled_end = ?, has_conflict = ?
+       WHERE task_id = ? AND date = ?`,
+      [data.scheduledStart, data.scheduledEnd, data.hasConflict ? 1 : 0, data.taskId, data.date]
+    );
+    return await getInstanceByTaskAndDate(data.taskId, data.date) as TaskInstance;
+  }
+
+  // No existing instance — create fresh
+  const id = generateId();
   await db.runAsync(
-    `INSERT OR REPLACE INTO task_instances
+    `INSERT INTO task_instances
       (id, task_id, date, scheduled_start, scheduled_end, status, snooze_count, has_conflict)
      VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
     [id, data.taskId, data.date, data.scheduledStart, data.scheduledEnd, data.hasConflict ? 1 : 0]
   );
 
-  const created = await getInstanceByTaskAndDate(data.taskId, data.date);
-  return created!;
+  return await getInstanceByTaskAndDate(data.taskId, data.date) as TaskInstance;
 }
 
 export async function updateInstanceStatus(

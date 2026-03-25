@@ -5,7 +5,7 @@ import { getUser, updateUser, completeOnboarding, type User } from '../database/
 import { getCategories, createCategory, updateCategory, deleteCategory, type Category } from '../database/queries/categoryQueries';
 import { getAllTasks, createTask, updateTask, deleteTask, pauseTask, resumeTask, type Task, type CreateTaskData } from '../database/queries/taskQueries';
 import { getRecurrenceRule, createRecurrenceRule, taskOccursOn, type RecurrenceRule, type RecurrenceFrequency } from '../database/queries/recurrenceQueries';
-import { createInstance, updateInstanceStatus, incrementSnoozeCount, type TaskInstance } from '../database/queries/instanceQueries';
+import { createInstance, updateInstanceStatus, incrementSnoozeCount, getInstancesForDate, type TaskInstance } from '../database/queries/instanceQueries';
 import { calculateAndSaveScore, getScoreForDate, type DailyScore } from '../database/queries/scoreQueries';
 import { todayString, timeToMinutes, minutesToTime } from '../database/db';
 
@@ -86,6 +86,10 @@ type SlottedTask = {
   hasConflict?: boolean;
 };
 
+// ─── SCHEDULING ALGORITHM ────────────────────────────────────────────────────
+// completedTaskIds — tasks already done today, their slots are freed up
+// effectiveStartMins — current time, never schedule in the past
+
 function buildScheduleAlgo(
   tasks: Task[],
   rules: Map<string, RecurrenceRule>,
@@ -93,6 +97,7 @@ function buildScheduleAlgo(
   dayStartMins: number,
   dayEndMins: number,
   effectiveStartMins: number,
+  completedTaskIds: Set<string> = new Set(),
 ): SlottedTask[] {
   const tierOrder: Record<string, number> = { high: 0, normal: 1, low: 2 };
 
@@ -103,9 +108,17 @@ function buildScheduleAlgo(
     return taskOccursOn(rule, dateStr);
   });
 
-  const fixed = occurring.filter(t => t.priority === 'fixed').sort((a, b) => timeToMinutes(a.time || '00:00') - timeToMinutes(b.time || '00:00'));
-  const flexible = occurring.filter(t => t.priority === 'flexible').sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
-  const optional = occurring.filter(t => t.priority === 'optional').sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
+  const fixed = occurring
+    .filter(t => t.priority === 'fixed')
+    .sort((a, b) => timeToMinutes(a.time || '00:00') - timeToMinutes(b.time || '00:00'));
+
+  const flexible = occurring
+    .filter(t => t.priority === 'flexible')
+    .sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
+
+  const optional = occurring
+    .filter(t => t.priority === 'optional')
+    .sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
 
   const scheduled: SlottedTask[] = [];
 
@@ -118,15 +131,22 @@ function buildScheduleAlgo(
     const bufferAfter = task.bufferAfter || 10;
     const blockStart = preferredStart - travelTo;
     const blockEnd = preferredStart + task.duration + travelFrom + bufferAfter;
-    if (blockStart < dayStartMins || blockEnd > dayEndMins || overlaps(blockStart, blockEnd)) return false;
+    if (blockStart < dayStartMins || blockEnd > dayEndMins) return false;
+    if (preferredStart < effectiveStartMins) return false;
+    if (overlaps(blockStart, blockEnd)) return false;
     scheduled.push({ task, rule, startMins: blockStart, endMins: blockEnd, displayStart: preferredStart, displayEnd: preferredStart + task.duration });
     return true;
   };
 
-  // Fixed tasks — placed at exact time, conflicts detected and both marked
+  // Fixed tasks
+  // Completed/skipped fixed tasks are NOT added to scheduled array
+  // This frees their time slot for other tasks on regenerate
   const conflictingTaskIds = new Set<string>();
 
   for (const task of fixed) {
+    // Skip completed/skipped — their slot is now free
+    if (completedTaskIds.has(task.id)) continue;
+
     const rule = rules.get(task.id)!;
     const timeMins = timeToMinutes(task.time || '09:00');
     const travelTo = task.travelTo || 0;
@@ -141,12 +161,14 @@ function buildScheduleAlgo(
       if (conflicting) conflictingTaskIds.add(conflicting.task.id);
       scheduled.push({ task, rule, startMins: blockStart, endMins: blockEnd, displayStart: timeMins, displayEnd: timeMins + task.duration });
     } else {
-      tryPlace(task, rule, timeMins);
+      scheduled.push({ task, rule, startMins: blockStart, endMins: blockEnd, displayStart: timeMins, displayEnd: timeMins + task.duration });
     }
   }
 
-  // Flexible tasks — never placed before effectiveStartMins
+  // Flexible tasks — skip completed, try preferred time, scan outward
   for (const task of flexible) {
+    if (completedTaskIds.has(task.id)) continue;
+
     const rule = rules.get(task.id)!;
     const rawPreferred = task.preferredTime ? timeToMinutes(task.preferredTime) : effectiveStartMins;
     const preferred = Math.max(rawPreferred, effectiveStartMins);
@@ -157,19 +179,29 @@ function buildScheduleAlgo(
     let placed = false;
     for (let offset = 0; offset <= 120; offset += 15) {
       if (preferred + offset <= latest && preferred + offset >= earliest && tryPlace(task, rule, preferred + offset)) { placed = true; break; }
-      if (offset > 0 && preferred - offset >= earliest && preferred - offset >= effectiveStartMins && preferred - offset <= latest && tryPlace(task, rule, preferred - offset)) { placed = true; break; }
+      if (offset > 0 && preferred - offset >= earliest && preferred - offset <= latest && tryPlace(task, rule, preferred - offset)) { placed = true; break; }
     }
-    if (!placed) { for (let t = earliest; t <= latest; t += 15) { if (tryPlace(task, rule, t)) break; } }
+    if (!placed) {
+      for (let t = earliest; t <= latest; t += 15) { if (tryPlace(task, rule, t)) break; }
+    }
   }
 
-  // Optional tasks — never placed before effectiveStartMins
+  // Optional tasks — skip completed, scan all available gaps
   for (const task of optional) {
+    if (completedTaskIds.has(task.id)) continue;
+
     const rule = rules.get(task.id)!;
     const rawPreferred = task.preferredTime ? timeToMinutes(task.preferredTime) : effectiveStartMins;
     const preferred = Math.max(rawPreferred, effectiveStartMins);
-    for (let offset = 0; offset <= 240; offset += 15) {
-      if (tryPlace(task, rule, preferred + offset)) break;
-      if (offset > 0 && tryPlace(task, rule, preferred - offset)) break;
+
+    let placed = false;
+    for (let t = preferred; t <= dayEndMins - task.duration; t += 15) {
+      if (tryPlace(task, rule, t)) { placed = true; break; }
+    }
+    if (!placed) {
+      for (let t = effectiveStartMins; t < preferred; t += 15) {
+        if (tryPlace(task, rule, t)) { placed = true; break; }
+      }
     }
   }
 
@@ -180,6 +212,8 @@ function buildScheduleAlgo(
 
   return scheduled.sort((a, b) => a.displayStart - b.displayStart);
 }
+
+// ─── CONTEXT TYPE ─────────────────────────────────────────────────────────────
 
 type StoreContextType = State & {
   initialise: () => Promise<void>;
@@ -205,6 +239,8 @@ type StoreContextType = State & {
 
 const StoreContext = createContext<StoreContextType | null>(null);
 
+// ─── PROVIDER ─────────────────────────────────────────────────────────────────
+
 export function DayForgeProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stateRef = React.useRef(state);
@@ -225,11 +261,26 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
       if (rule) rules.set(task.id, rule);
     }
 
-    const slotted = buildScheduleAlgo(tasks, rules, todayDate, dayStartMins, dayEndMins, effectiveStartMins);
+    // Load existing instance statuses so completed tasks free up their slots
+    const existingInstances = await getInstancesForDate(todayDate);
+    const completedTaskIds = new Set(
+      existingInstances
+        .filter(i => i.status === 'completed' || i.status === 'skipped')
+        .map(i => i.taskId)
+    );
 
+    const slotted = buildScheduleAlgo(
+      tasks, rules, todayDate,
+      dayStartMins, dayEndMins,
+      effectiveStartMins,
+      completedTaskIds,
+    );
+
+    const scheduledTaskIds = new Set(slotted.map(s => s.task.id));
     const categoryMap = new Map(categories.map(c => [c.id, c]));
     const scheduledTasks: ScheduledTask[] = [];
 
+    // Add scheduled tasks
     for (const slot of slotted) {
       const instance = await createInstance({
         taskId: slot.task.id,
@@ -239,7 +290,37 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
         hasConflict: slot.hasConflict ?? false,
       });
       const category = categoryMap.get(slot.task.categoryId);
-      if (category) scheduledTasks.push({ instance, task: slot.task, category, recurrenceRule: slot.rule });
+      if (category) scheduledTasks.push({ instance, task: slot.task, category, recurrenceRule: slot.rule ?? null });
+    }
+
+    // Add completed tasks back into the schedule so they show in the completed section
+    for (const existing of existingInstances) {
+      if (existing.status !== 'completed' && existing.status !== 'skipped') continue;
+      const task = tasks.find(t => t.id === existing.taskId);
+      if (!task) continue;
+      const category = categoryMap.get(task.categoryId);
+      const rule = rules.get(task.id) ?? null;
+      if (category) scheduledTasks.push({ instance: existing, task, category, recurrenceRule: rule });
+    }
+
+    // Add unscheduled tasks — occur today, not completed, couldn't be placed
+    for (const task of tasks) {
+      if (scheduledTaskIds.has(task.id)) continue;
+      if (completedTaskIds.has(task.id)) continue;
+      const rule = rules.get(task.id);
+      if (!rule) continue;
+      if (!taskOccursOn(rule, todayDate)) continue;
+      if (task.pausedUntil && todayDate <= task.pausedUntil) continue;
+
+      const instance = await createInstance({
+        taskId: task.id,
+        date: todayDate,
+        scheduledStart: '00:00',
+        scheduledEnd: '00:00',
+        hasConflict: false,
+      });
+      const category = categoryMap.get(task.categoryId);
+      if (category) scheduledTasks.push({ instance, task, category, recurrenceRule: rule });
     }
 
     const score = await getScoreForDate(todayDate);
