@@ -427,7 +427,19 @@ export default function AddTaskModal({
       };
       load();
     } else if (visible) {
-      setForm({ ...DEFAULT_FORM, categoryId: categories[0]?.id || "" });
+      const firstCat = categories[0];
+      setForm({
+        ...DEFAULT_FORM,
+        categoryId: firstCat?.id || "",
+        priority: firstCat?.defaultPriority ?? DEFAULT_FORM.priority,
+        priorityTier:
+          firstCat?.defaultPriorityTier ?? DEFAULT_FORM.priorityTier,
+        duration: firstCat?.defaultDuration ?? DEFAULT_FORM.duration,
+        bufferAfter: firstCat?.defaultBufferAfter ?? DEFAULT_FORM.bufferAfter,
+        notificationEnabled:
+          firstCat?.defaultNotificationEnabled ??
+          DEFAULT_FORM.notificationEnabled,
+      });
       setErrors({});
     }
   }, [visible, taskToEdit]);
@@ -636,7 +648,16 @@ export default function AddTaskModal({
                 {categories.map((cat) => (
                   <TouchableOpacity
                     key={cat.id}
-                    onPress={() => update({ categoryId: cat.id })}
+                    onPress={() => {
+                      update({
+                        categoryId: cat.id,
+                        priority: cat.defaultPriority,
+                        priorityTier: cat.defaultPriorityTier,
+                        duration: cat.defaultDuration,
+                        bufferAfter: cat.defaultBufferAfter,
+                        notificationEnabled: cat.defaultNotificationEnabled,
+                      });
+                    }}
                     style={[
                       fs.categoryChip,
                       {

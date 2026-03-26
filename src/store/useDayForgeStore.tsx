@@ -87,8 +87,6 @@ type SlottedTask = {
 };
 
 // ─── SCHEDULING ALGORITHM ────────────────────────────────────────────────────
-// completedTaskIds — tasks already done today, their slots are freed up
-// effectiveStartMins — current time, never schedule in the past
 
 function buildScheduleAlgo(
   tasks: Task[],
@@ -108,22 +106,12 @@ function buildScheduleAlgo(
     return taskOccursOn(rule, dateStr);
   });
 
-  const fixed = occurring
-    .filter(t => t.priority === 'fixed')
-    .sort((a, b) => timeToMinutes(a.time || '00:00') - timeToMinutes(b.time || '00:00'));
-
-  const flexible = occurring
-    .filter(t => t.priority === 'flexible')
-    .sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
-
-  const optional = occurring
-    .filter(t => t.priority === 'optional')
-    .sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
+  const fixed = occurring.filter(t => t.priority === 'fixed').sort((a, b) => timeToMinutes(a.time || '00:00') - timeToMinutes(b.time || '00:00'));
+  const flexible = occurring.filter(t => t.priority === 'flexible').sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
+  const optional = occurring.filter(t => t.priority === 'optional').sort((a, b) => tierOrder[a.priorityTier] - tierOrder[b.priorityTier]);
 
   const scheduled: SlottedTask[] = [];
-
-  const overlaps = (start: number, end: number) =>
-    scheduled.some(s => !(end <= s.startMins || start >= s.endMins));
+  const overlaps = (start: number, end: number) => scheduled.some(s => !(end <= s.startMins || start >= s.endMins));
 
   const tryPlace = (task: Task, rule: RecurrenceRule, preferredStart: number): boolean => {
     const travelTo = task.travelTo || 0;
@@ -138,15 +126,10 @@ function buildScheduleAlgo(
     return true;
   };
 
-  // Fixed tasks
-  // Completed/skipped fixed tasks are NOT added to scheduled array
-  // This frees their time slot for other tasks on regenerate
   const conflictingTaskIds = new Set<string>();
 
   for (const task of fixed) {
-    // Skip completed/skipped — their slot is now free
     if (completedTaskIds.has(task.id)) continue;
-
     const rule = rules.get(task.id)!;
     const timeMins = timeToMinutes(task.time || '09:00');
     const travelTo = task.travelTo || 0;
@@ -154,7 +137,6 @@ function buildScheduleAlgo(
     const bufferAfter = task.bufferAfter || 10;
     const blockStart = timeMins - travelTo;
     const blockEnd = timeMins + task.duration + travelFrom + bufferAfter;
-
     if (overlaps(blockStart, blockEnd)) {
       conflictingTaskIds.add(task.id);
       const conflicting = scheduled.find(s => !(blockEnd <= s.startMins || blockStart >= s.endMins));
@@ -165,53 +147,52 @@ function buildScheduleAlgo(
     }
   }
 
-  // Flexible tasks — skip completed, try preferred time, scan outward
   for (const task of flexible) {
     if (completedTaskIds.has(task.id)) continue;
-
     const rule = rules.get(task.id)!;
     const rawPreferred = task.preferredTime ? timeToMinutes(task.preferredTime) : effectiveStartMins;
     const preferred = Math.max(rawPreferred, effectiveStartMins);
     const rawEarliest = task.earliestStart ? timeToMinutes(task.earliestStart) : dayStartMins;
     const earliest = Math.max(rawEarliest, effectiveStartMins);
     const latest = task.latestEnd ? timeToMinutes(task.latestEnd) - task.duration : dayEndMins - task.duration;
-
     let placed = false;
     for (let offset = 0; offset <= 120; offset += 15) {
       if (preferred + offset <= latest && preferred + offset >= earliest && tryPlace(task, rule, preferred + offset)) { placed = true; break; }
       if (offset > 0 && preferred - offset >= earliest && preferred - offset <= latest && tryPlace(task, rule, preferred - offset)) { placed = true; break; }
     }
-    if (!placed) {
-      for (let t = earliest; t <= latest; t += 15) { if (tryPlace(task, rule, t)) break; }
-    }
+    if (!placed) { for (let t = earliest; t <= latest; t += 15) { if (tryPlace(task, rule, t)) break; } }
   }
 
-  // Optional tasks — skip completed, scan all available gaps
   for (const task of optional) {
     if (completedTaskIds.has(task.id)) continue;
-
     const rule = rules.get(task.id)!;
     const rawPreferred = task.preferredTime ? timeToMinutes(task.preferredTime) : effectiveStartMins;
     const preferred = Math.max(rawPreferred, effectiveStartMins);
-
     let placed = false;
-    for (let t = preferred; t <= dayEndMins - task.duration; t += 15) {
-      if (tryPlace(task, rule, t)) { placed = true; break; }
-    }
-    if (!placed) {
-      for (let t = effectiveStartMins; t < preferred; t += 15) {
-        if (tryPlace(task, rule, t)) { placed = true; break; }
-      }
-    }
+    for (let t = preferred; t <= dayEndMins - task.duration; t += 15) { if (tryPlace(task, rule, t)) { placed = true; break; } }
+    if (!placed) { for (let t = effectiveStartMins; t < preferred; t += 15) { if (tryPlace(task, rule, t)) { placed = true; break; } } }
   }
 
-  // Mark conflicting tasks
   for (const slot of scheduled) {
     if (conflictingTaskIds.has(slot.task.id)) slot.hasConflict = true;
   }
 
   return scheduled.sort((a, b) => a.displayStart - b.displayStart);
 }
+
+// ─── CATEGORY CREATE DATA TYPE ────────────────────────────────────────────────
+
+type CreateCategoryData = {
+  label: string;
+  color: string;
+  notificationsEnabled?: boolean;
+  notificationMinutesBefore?: number;
+  defaultPriority?: Category['defaultPriority'];
+  defaultPriorityTier?: Category['defaultPriorityTier'];
+  defaultDuration?: number;
+  defaultBufferAfter?: number;
+  defaultNotificationEnabled?: boolean;
+};
 
 // ─── CONTEXT TYPE ─────────────────────────────────────────────────────────────
 
@@ -220,8 +201,8 @@ type StoreContextType = State & {
   finishOnboarding: (s: { dayStart: string; dayEnd: string; theme: string }) => Promise<void>;
   updateUserSettings: (patch: Partial<User>) => Promise<void>;
   loadCategories: () => Promise<void>;
-  addCategory: (data: { label: string; color: string }) => Promise<void>;
-  editCategory: (id: string, patch: Partial<Category>) => Promise<void>;
+  addCategory: (data: CreateCategoryData) => Promise<void>;
+  editCategory: (id: string, patch: Partial<Omit<Category, 'id' | 'createdAt'>>) => Promise<void>;
   removeCategory: (id: string) => Promise<void>;
   loadTasks: () => Promise<void>;
   addTask: (data: CreateTaskData, recurrence: { frequency: RecurrenceFrequency; startDate: string; endDate?: string; occurrences?: number; customDays?: number[]; monthlyDay?: number }) => Promise<void>;
@@ -250,7 +231,6 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
     const dayStartMins = timeToMinutes(user.dayStart);
     const dayEndMins = timeToMinutes(user.dayEnd);
     const todayDate = todayString();
-
     const now = new Date();
     const currentTimeMins = now.getHours() * 60 + now.getMinutes();
     const effectiveStartMins = Math.max(dayStartMins, currentTimeMins);
@@ -261,30 +241,19 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
       if (rule) rules.set(task.id, rule);
     }
 
-    // Load existing instance statuses so completed tasks free up their slots
     const existingInstances = await getInstancesForDate(todayDate);
     const completedTaskIds = new Set(
-      existingInstances
-        .filter(i => i.status === 'completed' || i.status === 'skipped')
-        .map(i => i.taskId)
+      existingInstances.filter(i => i.status === 'completed' || i.status === 'skipped').map(i => i.taskId)
     );
 
-    const slotted = buildScheduleAlgo(
-      tasks, rules, todayDate,
-      dayStartMins, dayEndMins,
-      effectiveStartMins,
-      completedTaskIds,
-    );
-
+    const slotted = buildScheduleAlgo(tasks, rules, todayDate, dayStartMins, dayEndMins, effectiveStartMins, completedTaskIds);
     const scheduledTaskIds = new Set(slotted.map(s => s.task.id));
     const categoryMap = new Map(categories.map(c => [c.id, c]));
     const scheduledTasks: ScheduledTask[] = [];
 
-    // Add scheduled tasks
     for (const slot of slotted) {
       const instance = await createInstance({
-        taskId: slot.task.id,
-        date: todayDate,
+        taskId: slot.task.id, date: todayDate,
         scheduledStart: minutesToTime(slot.displayStart),
         scheduledEnd: minutesToTime(slot.displayEnd),
         hasConflict: slot.hasConflict ?? false,
@@ -293,7 +262,6 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
       if (category) scheduledTasks.push({ instance, task: slot.task, category, recurrenceRule: slot.rule ?? null });
     }
 
-    // Add completed tasks back into the schedule so they show in the completed section
     for (const existing of existingInstances) {
       if (existing.status !== 'completed' && existing.status !== 'skipped') continue;
       const task = tasks.find(t => t.id === existing.taskId);
@@ -303,7 +271,6 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
       if (category) scheduledTasks.push({ instance: existing, task, category, recurrenceRule: rule });
     }
 
-    // Add unscheduled tasks — occur today, not completed, couldn't be placed
     for (const task of tasks) {
       if (scheduledTaskIds.has(task.id)) continue;
       if (completedTaskIds.has(task.id)) continue;
@@ -311,14 +278,7 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
       if (!rule) continue;
       if (!taskOccursOn(rule, todayDate)) continue;
       if (task.pausedUntil && todayDate <= task.pausedUntil) continue;
-
-      const instance = await createInstance({
-        taskId: task.id,
-        date: todayDate,
-        scheduledStart: '00:00',
-        scheduledEnd: '00:00',
-        hasConflict: false,
-      });
+      const instance = await createInstance({ taskId: task.id, date: todayDate, scheduledStart: '00:00', scheduledEnd: '00:00', hasConflict: false });
       const category = categoryMap.get(task.categoryId);
       if (category) scheduledTasks.push({ instance, task, category, recurrenceRule: rule });
     }
@@ -369,13 +329,14 @@ export function DayForgeProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_CATEGORIES', payload: categories });
   }, []);
 
-  const addCategory = useCallback(async (data: { label: string; color: string }) => {
+  // Updated to accept full category data including defaults
+  const addCategory = useCallback(async (data: CreateCategoryData) => {
     await createCategory(data);
     const categories = await getCategories();
     dispatch({ type: 'SET_CATEGORIES', payload: categories });
   }, []);
 
-  const editCategory = useCallback(async (id: string, patch: Partial<Category>) => {
+  const editCategory = useCallback(async (id: string, patch: Partial<Omit<Category, 'id' | 'createdAt'>>) => {
     await updateCategory(id, patch);
     const categories = await getCategories();
     dispatch({ type: 'SET_CATEGORIES', payload: categories });

@@ -1,11 +1,8 @@
 // src/database/db.ts
 // DayForge database initialisation
-// Opens SQLite connection and creates all tables on first run
-// Safe to run on every app start — CREATE TABLE IF NOT EXISTS means no data loss
+// PRAGMA statements run individually for Android APK compatibility
 
 import * as SQLite from "expo-sqlite";
-
-// ─── DATABASE CONNECTION ──────────────────────────────────────────────────────
 
 let db: SQLite.SQLiteDatabase | null = null;
 
@@ -16,26 +13,19 @@ export function getDatabase(): SQLite.SQLiteDatabase {
   return db;
 }
 
-// ─── INITIALISE ───────────────────────────────────────────────────────────────
-// Call once on app startup — creates tables and runs any pending migrations
-
 export async function initialiseDatabase(): Promise<void> {
   const database = getDatabase();
 
-  await database.execAsync(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-  `);
+  // Run PRAGMAs individually — execAsync with multiple statements
+  // can fail silently on Android production builds
+  await database.runAsync("PRAGMA journal_mode = WAL");
+  await database.runAsync("PRAGMA foreign_keys = ON");
 
   await createTables(database);
   await runMigrations(database);
 }
 
-// ─── CREATE TABLES ────────────────────────────────────────────────────────────
-
 async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
-  // ── users ──────────────────────────────────────────────────────────────────
-  // Single user app — only one row ever exists
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY DEFAULT 1,
@@ -48,7 +38,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     );
   `);
 
-  // ── categories ─────────────────────────────────────────────────────────────
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS categories (
       id TEXT PRIMARY KEY,
@@ -61,8 +50,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     );
   `);
 
-  // ── tasks ──────────────────────────────────────────────────────────────────
-  // Template record — never changes day to day
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
@@ -89,8 +76,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     );
   `);
 
-  // ── recurrence_rules ───────────────────────────────────────────────────────
-  // One row per task — defines how often it repeats
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS recurrence_rules (
       id TEXT PRIMARY KEY,
@@ -108,8 +93,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     );
   `);
 
-  // ── recurrence_exceptions ─────────────────────────────────────────────────
-  // Skip or modify a single occurrence without touching the template
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS recurrence_exceptions (
       id TEXT PRIMARY KEY,
@@ -122,9 +105,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     );
   `);
 
-  // ── task_instances ─────────────────────────────────────────────────────────
-  // Each scheduled occurrence of a task on a specific date
-  // Created by the scheduler when building a day
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS task_instances (
       id TEXT PRIMARY KEY,
@@ -139,14 +119,13 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       snoozed_until TEXT,
       completed_at TEXT,
       notes TEXT,
+      has_conflict INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
       UNIQUE(task_id, date)
     );
   `);
 
-  // ── daily_scores ───────────────────────────────────────────────────────────
-  // Pre-calculated score per day for fast dashboard loading
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS daily_scores (
       id TEXT PRIMARY KEY,
@@ -165,8 +144,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     );
   `);
 
-  // ── schema_migrations ──────────────────────────────────────────────────────
-  // Tracks which migrations have been run
   await database.execAsync(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -175,13 +152,9 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
   `);
 }
 
-// ─── MIGRATIONS ───────────────────────────────────────────────────────────────
-// Add new migrations here as the schema evolves
-// Each migration runs exactly once — never modifies existing data
-
 async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
+  // Standard migrations — single statement each, safe to use execAsync
   const migrations: { version: number; sql: string }[] = [
-    // Version 1 — seed default categories
     {
       version: 1,
       sql: `
@@ -196,7 +169,6 @@ async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
           ('personal',     'Personal',     '#8892B0', 15, 8);
       `,
     },
-    // Version 2 — seed default user row
     {
       version: 2,
       sql: `
@@ -215,7 +187,6 @@ async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
       "SELECT version FROM schema_migrations WHERE version = ?",
       [migration.version],
     );
-
     if (!already) {
       await database.execAsync(migration.sql);
       await database.runAsync(
@@ -225,32 +196,73 @@ async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
       console.log(`Migration ${migration.version} applied.`);
     }
   }
+
+  // Migration 4 — demo tasks
+  // Individual runAsync calls required for foreign key constraint reliability
+  const v4 = await database.getFirstAsync<{ version: number }>(
+    "SELECT version FROM schema_migrations WHERE version = ?", [4]
+  );
+
+  if (!v4) {
+    const demoTasks = [
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t1', 'Team Meeting', 'appointments', 'fixed', 'high', 60, 10, '09:00', null, 0, 0, 1, 60, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t2', 'Physio Appointment', 'medical', 'fixed', 'high', 45, 10, '14:00', null, 20, 20, 1, 60, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t3', 'School Run', 'chores', 'fixed', 'normal', 30, 10, '15:30', null, 0, 0, 1, 15, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t4', 'Morning Run', 'training', 'flexible', 'high', 60, 10, null, '07:00', 0, 0, 1, 30, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t5', 'Project Review', 'projects', 'flexible', 'normal', 45, 10, null, '10:30', 0, 0, 1, 15, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t6', 'Study Session', 'study', 'flexible', 'normal', 90, 10, null, '11:00', 0, 0, 1, 15, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t7', 'Evening Read', 'personal', 'optional', 'normal', 30, 10, null, '20:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t8', 'Inbox Zero', 'projects', 'optional', 'low', 20, 10, null, '08:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t9', 'Meal Prep', 'chores', 'optional', 'low', 45, 10, null, '17:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
+      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t10', 'Catch Up With Friends', 'personal', 'optional', 'normal', 30, 10, null, '19:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
+    ];
+
+    const demoRules = [
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r1', 'demo_t1', 'weekly', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r2', 'demo_t2', 'once', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r3', 'demo_t3', 'weekdays', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r4', 'demo_t4', 'daily', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r5', 'demo_t5', 'weekly', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r6', 'demo_t6', 'weekdays', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r7', 'demo_t7', 'daily', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r8', 'demo_t8', 'daily', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r9', 'demo_t9', 'weekly', date('now'))`,
+      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r10', 'demo_t10', 'weekly', date('now'))`,
+    ];
+
+    for (const sql of demoTasks) {
+      await database.runAsync(sql);
+    }
+    for (const sql of demoRules) {
+      await database.runAsync(sql);
+    }
+
+    await database.runAsync(
+      "INSERT INTO schema_migrations (version) VALUES (?)", [4]
+    );
+    console.log("Migration 4 applied.");
+  }
 }
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 
-// Generate a simple unique ID
 export function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-// Get today's date as YYYY-MM-DD
 export function todayString(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Format a date as YYYY-MM-DD
 export function formatDateString(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-// Convert HH:MM to total minutes since midnight
 export function timeToMinutes(time: string): number {
   const [h, m] = time.split(":").map(Number);
   return h * 60 + m;
 }
 
-// Convert total minutes since midnight to HH:MM
 export function minutesToTime(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;

@@ -1,21 +1,18 @@
 // src/screens/TodayScreen.tsx
-// Today screen with:
-// 1. Fixed scheduling logic
-// 2. Regenerate day button
-// 3. Completed tasks collapsed at bottom
-// 4. Unscheduled tasks section
-// 5. Current time indicator
-// 6. Next up highlight
 
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, Modal, Dimensions, Alert,
+  RefreshControl, Modal, Dimensions, Alert, ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "../theme/ThemeContext";
 import { useDayForgeStore, type ScheduledTask } from "../store/useDayForgeStore";
 import { openEditTaskModal } from "../navigation/TabNavigator";
+import { getInstancesForDate } from "../database/queries/instanceQueries";
+import { getRecurrenceRule, taskOccursOn } from "../database/queries/recurrenceQueries";
+import { getScoreForDate } from "../database/queries/scoreQueries";
+import { todayString, timeToMinutes } from "../database/db";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -46,6 +43,22 @@ function timeToMins(t: string): number {
   return h * 60 + m;
 }
 
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function getDateLabel(dateStr: string): string {
+  const today = todayString();
+  const yesterday = addDays(today, -1);
+  const tomorrow = addDays(today, 1);
+  if (dateStr === today) return 'Today';
+  if (dateStr === yesterday) return 'Yesterday';
+  if (dateStr === tomorrow) return 'Tomorrow';
+  return formatDate(dateStr);
+}
+
 // ─── SCORE RING ───────────────────────────────────────────────────────────────
 
 function ScoreRing({ score, pointsEarned, pointsPossible }: {
@@ -73,7 +86,6 @@ function ScheduleSummary({ schedule }: { schedule: ScheduledTask[] }) {
   const flexible = active.filter(s => s.task.priority === "flexible").length;
   const optional = active.filter(s => s.task.priority === "optional").length;
   const completed = active.filter(s => s.instance.status === "completed").length;
-
   return (
     <View style={s.summaryRow}>
       {fixed > 0 && <View style={[s.summaryPill, { backgroundColor: theme.colors.fixedSurface }]}><View style={[s.summaryDot, { backgroundColor: theme.colors.fixed }]} /><Text style={[s.summaryText, { color: theme.colors.fixed, fontFamily: theme.fonts.body }]}>{fixed} fixed</Text></View>}
@@ -100,10 +112,10 @@ function MenuAction({ label, color, bg, onPress }: {
 
 // ─── TASK ACTION MENU ─────────────────────────────────────────────────────────
 
-function TaskActionMenu({ scheduledTask, visible, onClose, onComplete, onSkip, onSnooze, onEdit, onDelete }: {
+function TaskActionMenu({ scheduledTask, visible, onClose, onComplete, onSkip, onSnooze, onEdit, onDelete, isToday }: {
   scheduledTask: ScheduledTask | null; visible: boolean; onClose: () => void;
   onComplete: () => void; onSkip: () => void; onSnooze: () => void;
-  onEdit: () => void; onDelete: () => void;
+  onEdit: () => void; onDelete: () => void; isToday: boolean;
 }) {
   const { theme } = useTheme();
   if (!scheduledTask) return null;
@@ -117,9 +129,9 @@ function TaskActionMenu({ scheduledTask, visible, onClose, onComplete, onSkip, o
         <View style={[s.menuHandle, { backgroundColor: theme.colors.border }]} />
         <Text style={[s.menuTitle, { color: theme.colors.textPrimary, fontFamily: theme.fonts.heading }]}>{scheduledTask.task.name}</Text>
         <Text style={[s.menuSub, { color: theme.colors.textSecondary, fontFamily: theme.fonts.body }]}>
-          {isUnscheduled ? "Unscheduled today" : formatTime(scheduledTask.instance.scheduledStart)} · {scheduledTask.task.duration} min · {scheduledTask.category.label}
+          {isUnscheduled ? "Unscheduled" : formatTime(scheduledTask.instance.scheduledStart)} · {scheduledTask.task.duration} min · {scheduledTask.category.label}
         </Text>
-        {!isDone && !isUnscheduled && (
+        {isToday && !isDone && !isUnscheduled && (
           <>
             <MenuAction label="Mark as complete" color={theme.colors.success} bg={theme.colors.successSurface} onPress={onComplete} />
             <MenuAction label="Snooze — do it later" color={theme.colors.warning} bg={theme.colors.warningSurface} onPress={onSnooze} />
@@ -146,8 +158,9 @@ function TaskActionMenu({ scheduledTask, visible, onClose, onComplete, onSkip, o
 
 // ─── TASK CARD ────────────────────────────────────────────────────────────────
 
-function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false }: {
-  scheduledTask: ScheduledTask; onPress: () => void; onCheckbox: () => void; isNextUp?: boolean;
+function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false, isToday = true }: {
+  scheduledTask: ScheduledTask; onPress: () => void; onCheckbox: () => void;
+  isNextUp?: boolean; isToday?: boolean;
 }) {
   const { theme } = useTheme();
   const { task, instance, category } = scheduledTask;
@@ -160,15 +173,11 @@ function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false }: {
   const isInactive = isDone || isSkipped || isSnoozed;
 
   const priorityColor = isConflict ? theme.colors.danger : {
-    fixed: theme.colors.fixed,
-    flexible: theme.colors.flexible,
-    optional: theme.colors.optional,
+    fixed: theme.colors.fixed, flexible: theme.colors.flexible, optional: theme.colors.optional,
   }[task.priority];
 
   const priorityBg = {
-    fixed: theme.colors.fixedSurface,
-    flexible: theme.colors.flexibleSurface,
-    optional: theme.colors.optionalSurface,
+    fixed: theme.colors.fixedSurface, flexible: theme.colors.flexibleSurface, optional: theme.colors.optionalSurface,
   }[task.priority];
 
   return (
@@ -182,8 +191,6 @@ function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false }: {
       accessibilityRole="button"
       accessibilityLabel={`${task.name}, ${task.priority}, ${isUnscheduled ? 'unscheduled' : formatTime(instance.scheduledStart)}, ${status}`}
       accessibilityHint="Tap for options">
-
-      {/* Time column */}
       <View style={s.timeColumn}>
         {isUnscheduled ? (
           <Text style={[s.taskTime, { color: theme.colors.textMuted, fontFamily: theme.fonts.mono, fontSize: 10 }]}>—</Text>
@@ -196,18 +203,13 @@ function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false }: {
           </>
         )}
       </View>
-
-      {/* Content */}
       <View style={s.taskContent}>
-        {isNextUp && (
-          <Text style={[s.nextUpLabel, { color: theme.colors.accent, fontFamily: theme.fonts.body }]}>Next up</Text>
-        )}
+        {isNextUp && <Text style={[s.nextUpLabel, { color: theme.colors.accent, fontFamily: theme.fonts.body }]}>Next up</Text>}
         <Text style={[s.taskName, {
           color: isInactive ? theme.colors.textMuted : theme.colors.textPrimary,
           fontFamily: theme.fonts.body,
           textDecorationLine: isDone ? "line-through" : "none",
         }]} numberOfLines={1}>{task.name}</Text>
-
         <View style={s.taskMeta}>
           <View style={[s.categoryBadge, { backgroundColor: category.color + "22" }]}>
             <View style={[s.categoryDot, { backgroundColor: category.color }]} />
@@ -220,15 +222,12 @@ function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false }: {
           {isSnoozed && <View style={[s.statusBadge, { backgroundColor: theme.colors.warningSurface }]}><Text style={[s.statusText, { color: theme.colors.warning, fontFamily: theme.fonts.body }]}>snoozed</Text></View>}
           {isSkipped && <View style={[s.statusBadge, { backgroundColor: theme.colors.surfaceAlt }]}><Text style={[s.statusText, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>skipped</Text></View>}
         </View>
-
         {(task.travelTo > 0 || task.travelFrom > 0) && (
           <Text style={[s.travelText, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>
             🚗 {task.travelTo > 0 ? `${task.travelTo}m to` : ""}{task.travelTo > 0 && task.travelFrom > 0 ? " · " : ""}{task.travelFrom > 0 ? `${task.travelFrom}m back` : ""}
           </Text>
         )}
       </View>
-
-      {/* Checkbox — only for scheduled, non-unscheduled tasks */}
       {!isUnscheduled && (
         <TouchableOpacity onPress={onCheckbox}
           style={[s.checkbox, {
@@ -245,8 +244,6 @@ function TaskCard({ scheduledTask, onPress, onCheckbox, isNextUp = false }: {
   );
 }
 
-// ─── SECTION DIVIDER ─────────────────────────────────────────────────────────
-
 function SectionDivider({ label, count, collapsed, onToggle }: {
   label: string; count: number; collapsed: boolean; onToggle: () => void;
 }) {
@@ -254,27 +251,167 @@ function SectionDivider({ label, count, collapsed, onToggle }: {
   return (
     <TouchableOpacity onPress={onToggle} style={[s.sectionDivider, { borderColor: theme.colors.border }]}
       accessibilityRole="button" accessibilityLabel={`${label}, ${count} tasks, ${collapsed ? 'collapsed' : 'expanded'}`}>
-      <Text style={[s.sectionDividerText, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>
-        {label} ({count})
-      </Text>
-      <Text style={[s.sectionDividerChevron, { color: theme.colors.textMuted }]}>
-        {collapsed ? '▼' : '▲'}
-      </Text>
+      <Text style={[s.sectionDividerText, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>{label} ({count})</Text>
+      <Text style={[s.sectionDividerChevron, { color: theme.colors.textMuted }]}>{collapsed ? '▼' : '▲'}</Text>
     </TouchableOpacity>
   );
 }
 
-// ─── EMPTY STATE ──────────────────────────────────────────────────────────────
-
-function EmptyState() {
+function EmptyState({ isToday }: { isToday: boolean }) {
   const { theme } = useTheme();
   return (
     <View style={s.emptyState}>
-      <Text style={s.emptyEmoji}>⚒️</Text>
-      <Text style={[s.emptyTitle, { color: theme.colors.textPrimary, fontFamily: theme.fonts.heading }]}>No tasks today</Text>
-      <Text style={[s.emptyBody, { color: theme.colors.textSecondary, fontFamily: theme.fonts.body }]}>
-        Tap the + button to add your first task. Set it to recurring and DayForge will build your day automatically.
+      <Text style={s.emptyEmoji}>{isToday ? '⚒️' : '📅'}</Text>
+      <Text style={[s.emptyTitle, { color: theme.colors.textPrimary, fontFamily: theme.fonts.heading }]}>
+        {isToday ? 'No tasks today' : 'No tasks on this day'}
       </Text>
+      <Text style={[s.emptyBody, { color: theme.colors.textSecondary, fontFamily: theme.fonts.body }]}>
+        {isToday
+          ? 'Tap the + button to add your first task.'
+          : 'No tasks were scheduled for this day.'}
+      </Text>
+    </View>
+  );
+}
+
+// ─── PAST/FUTURE DAY VIEW ────────────────────────────────────────────────────
+// Read-only view for yesterday and tomorrow
+
+function OtherDayView({ dateStr, categories, tasks }: {
+  dateStr: string;
+  categories: any[];
+  tasks: any[];
+}) {
+  const { theme } = useTheme();
+  const [dayTasks, setDayTasks] = useState<any[]>([]);
+  const [dayScore, setDayScore] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const today = todayString();
+  const isPast = dateStr < today;
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const categoryMap = new Map(categories.map((c: any) => [c.id, c]));
+        const score = await getScoreForDate(dateStr);
+        setDayScore(score);
+
+        const instances = await getInstancesForDate(dateStr);
+        if (instances.length > 0) {
+          const result = instances
+            .map(instance => {
+              const task = tasks.find((t: any) => t.id === instance.taskId);
+              const category = task ? categoryMap.get(task.categoryId) : null;
+              return { instance, task, category };
+            })
+            .filter(r => r.task && r.category);
+          setDayTasks(result);
+        } else {
+          // Future date — show what tasks will occur
+          const result: any[] = [];
+          for (const task of tasks) {
+            const rule = await getRecurrenceRule(task.id);
+            if (!rule) continue;
+            if (!taskOccursOn(rule, dateStr)) continue;
+            if (task.pausedUntil && dateStr <= task.pausedUntil) continue;
+            const category = categoryMap.get(task.categoryId);
+            if (category) result.push({ instance: null, task, category });
+          }
+          result.sort((a, b) => {
+            const aTime = a.task.time ? timeToMinutes(a.task.time) : a.task.preferredTime ? timeToMinutes(a.task.preferredTime) : 999;
+            const bTime = b.task.time ? timeToMinutes(b.task.time) : b.task.preferredTime ? timeToMinutes(b.task.preferredTime) : 999;
+            return aTime - bTime;
+          });
+          setDayTasks(result);
+        }
+      } catch (e) {
+        console.error('OtherDayView load error:', e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [dateStr, tasks, categories]);
+
+  if (loading) {
+    return <ActivityIndicator color={theme.colors.accent} style={{ marginTop: 40 }} />;
+  }
+
+  if (dayTasks.length === 0) {
+    return <EmptyState isToday={false} />;
+  }
+
+  const completedCount = dayTasks.filter(t => t.instance?.status === 'completed').length;
+  const totalCount = dayTasks.length;
+
+  return (
+    <View style={s.timeline}>
+      {isPast && dayScore && (
+        <View style={[s.daySummaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          <Text style={[s.daySummaryScore, { color: theme.colors.accent, fontFamily: theme.fonts.heading }]}>
+            {Math.round(dayScore.score)}%
+          </Text>
+          <Text style={[s.daySummaryText, { color: theme.colors.textSecondary, fontFamily: theme.fonts.body }]}>
+            {completedCount}/{totalCount} tasks completed
+          </Text>
+        </View>
+      )}
+      {!isPast && (
+        <View style={[s.previewBanner, { backgroundColor: theme.colors.accentSurface, borderColor: theme.colors.accent }]}>
+          <Text style={[s.previewBannerText, { color: theme.colors.accent, fontFamily: theme.fonts.body }]}>
+            📅 Preview — {dayTasks.length} tasks scheduled for tomorrow
+          </Text>
+        </View>
+      )}
+      {dayTasks.map((item, idx) => {
+        const { task, category, instance } = item;
+        if (!task || !category) return null;
+        const priorityColor = { fixed: theme.colors.fixed, flexible: theme.colors.flexible, optional: theme.colors.optional }[task.priority as string] ?? theme.colors.textMuted;
+        const priorityBg = { fixed: theme.colors.fixedSurface, flexible: theme.colors.flexibleSurface, optional: theme.colors.optionalSurface }[task.priority as string] ?? theme.colors.surfaceAlt;
+        const isDone = instance?.status === 'completed';
+        const isSkipped = instance?.status === 'skipped';
+        const timeStr = instance?.scheduledStart && instance.scheduledStart !== '00:00'
+          ? formatTime(instance.scheduledStart)
+          : task.time ? formatTime(task.time) : task.preferredTime ? formatTime(task.preferredTime) : '—';
+
+        return (
+          <View key={`${task.id}-${idx}`}
+            style={[s.taskCard, {
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border,
+              borderLeftColor: priorityColor,
+              opacity: isDone || isSkipped ? 0.55 : 1,
+            }]}>
+            <View style={s.timeColumn}>
+              <Text style={[s.taskTime, { color: theme.colors.textMuted, fontFamily: theme.fonts.mono }]}>{timeStr}</Text>
+              <Text style={[s.taskDuration, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>{task.duration}m</Text>
+            </View>
+            <View style={s.taskContent}>
+              <Text style={[s.taskName, {
+                color: theme.colors.textPrimary, fontFamily: theme.fonts.body,
+                textDecorationLine: isDone ? 'line-through' : 'none',
+              }]} numberOfLines={1}>{task.name}</Text>
+              <View style={s.taskMeta}>
+                <View style={[s.categoryBadge, { backgroundColor: category.color + '22' }]}>
+                  <View style={[s.categoryDot, { backgroundColor: category.color }]} />
+                  <Text style={[s.categoryText, { color: category.color, fontFamily: theme.fonts.body }]}>{category.label}</Text>
+                </View>
+                <View style={[s.priorityBadge, { backgroundColor: priorityBg }]}>
+                  <Text style={[s.priorityText, { color: priorityColor, fontFamily: theme.fonts.body }]}>{task.priority}</Text>
+                </View>
+                {instance?.status && instance.status !== 'pending' && (
+                  <View style={[s.statusBadge, { backgroundColor: isDone ? theme.colors.successSurface : theme.colors.surfaceAlt }]}>
+                    <Text style={[s.statusText, { color: isDone ? theme.colors.success : theme.colors.textMuted, fontFamily: theme.fonts.body }]}>
+                      {instance.status}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -286,8 +423,14 @@ export default function TodayScreen() {
   const {
     todayDate, todaySchedule, todayScore, isScheduleBuilt,
     buildTodaySchedule, completeTask, uncompleteTask, skipTask, snoozeTask, removeTask,
+    tasks, categories,
   } = useDayForgeStore();
 
+  const today = todayString();
+  const yesterday = addDays(today, -1);
+  const tomorrow = addDays(today, 1);
+
+  const [viewDate, setViewDate] = useState(today);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedTask, setSelectedTask] = useState<ScheduledTask | null>(null);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -296,7 +439,8 @@ export default function TodayScreen() {
   const [currentTimeMins, setCurrentTimeMins] = useState(getCurrentTimeMins());
   const [regenerating, setRegenerating] = useState(false);
 
-  // Update current time every minute for the time indicator
+  const isViewingToday = viewDate === today;
+
   useEffect(() => {
     const interval = setInterval(() => setCurrentTimeMins(getCurrentTimeMins()), 60000);
     return () => clearInterval(interval);
@@ -315,7 +459,6 @@ export default function TodayScreen() {
   };
 
   const handleCardPress = (st: ScheduledTask) => { setSelectedTask(st); setMenuVisible(true); };
-
   const handleCheckbox = (st: ScheduledTask) => {
     if (st.instance.status === "completed") { uncompleteTask(st.instance.id); }
     else if (st.instance.status === "pending") { completeTask(st.instance.id); }
@@ -326,8 +469,8 @@ export default function TodayScreen() {
   const handleSkip = async () => { if (selectedTask) { await skipTask(selectedTask.instance.id); setMenuVisible(false); } };
   const handleSnooze = async () => {
     if (selectedTask) {
-      const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-      await snoozeTask(selectedTask.instance.id, tomorrow.toISOString().slice(0, 10));
+      const tom = new Date(); tom.setDate(tom.getDate() + 1);
+      await snoozeTask(selectedTask.instance.id, tom.toISOString().slice(0, 10));
       setMenuVisible(false);
     }
   };
@@ -350,14 +493,12 @@ export default function TodayScreen() {
     );
   };
 
-  // Split schedule into sections
+  // Today's schedule sections
   const scheduledTasks = todaySchedule.filter(st => st.instance.scheduledStart !== '00:00');
   const unscheduledTasks = todaySchedule.filter(st => st.instance.scheduledStart === '00:00');
   const activeTasks = scheduledTasks.filter(st => st.instance.status !== 'completed' && st.instance.status !== 'skipped');
   const completedTasks = scheduledTasks.filter(st => st.instance.status === 'completed' || st.instance.status === 'skipped');
   const hasConflicts = scheduledTasks.some(st => st.instance.hasConflict);
-
-  // Find next up task — first pending task that hasn't started yet or is currently running
   const nextUpTask = activeTasks.find(st => timeToMins(st.instance.scheduledStart) >= currentTimeMins);
 
   const score = todayScore?.score ?? 0;
@@ -372,16 +513,64 @@ export default function TodayScreen() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <Text style={[s.greeting, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>{getGreeting()}</Text>
+            {isViewingToday && (
+              <Text style={[s.greeting, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>{getGreeting()}</Text>
+            )}
             <Text style={[s.dateText, { color: theme.colors.textPrimary, fontFamily: theme.fonts.heading }]} accessibilityRole="header">
-              {formatDate(todayDate)}
+              {getDateLabel(viewDate)}
             </Text>
+            {!isViewingToday && (
+              <Text style={[s.fullDate, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>
+                {formatDate(viewDate)}
+              </Text>
+            )}
           </View>
-          <ScoreRing score={score} pointsEarned={pointsEarned} pointsPossible={pointsPossible} />
+          {isViewingToday ? (
+            <ScoreRing score={score} pointsEarned={pointsEarned} pointsPossible={pointsPossible} />
+          ) : (
+            <TouchableOpacity onPress={() => setViewDate(today)}
+              style={[s.backToTodayBtn, { backgroundColor: theme.colors.accentSurface, borderColor: theme.colors.accent }]}
+              accessibilityRole="button" accessibilityLabel="Back to today">
+              <Text style={[s.backToTodayText, { color: theme.colors.accent, fontFamily: theme.fonts.body }]}>Today</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
-        {/* Conflict banner */}
-        {hasConflicts && (
+        {/* Day navigation */}
+        <View style={[s.dayNav, { borderColor: theme.colors.border }]}>
+          <TouchableOpacity
+            onPress={() => setViewDate(yesterday)}
+            style={[s.dayNavBtn, viewDate === yesterday && { backgroundColor: theme.colors.surfaceAlt }]}
+            accessibilityRole="button" accessibilityLabel="View yesterday">
+            <Text style={[s.dayNavBtnText, {
+              color: viewDate === yesterday ? theme.colors.textPrimary : theme.colors.textMuted,
+              fontFamily: viewDate === yesterday ? theme.fonts.heading : theme.fonts.body,
+            }]}>‹ Yesterday</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setViewDate(today)}
+            style={[s.dayNavBtn, viewDate === today && { backgroundColor: theme.colors.accentSurface }]}
+            accessibilityRole="button" accessibilityLabel="View today">
+            <Text style={[s.dayNavBtnText, {
+              color: viewDate === today ? theme.colors.accent : theme.colors.textMuted,
+              fontFamily: viewDate === today ? theme.fonts.heading : theme.fonts.body,
+            }]}>Today</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setViewDate(tomorrow)}
+            style={[s.dayNavBtn, viewDate === tomorrow && { backgroundColor: theme.colors.surfaceAlt }]}
+            accessibilityRole="button" accessibilityLabel="Preview tomorrow">
+            <Text style={[s.dayNavBtnText, {
+              color: viewDate === tomorrow ? theme.colors.textPrimary : theme.colors.textMuted,
+              fontFamily: viewDate === tomorrow ? theme.fonts.heading : theme.fonts.body,
+            }]}>Tomorrow ›</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Conflict banner — today only */}
+        {isViewingToday && hasConflicts && (
           <View style={[s.conflictBanner, { backgroundColor: theme.colors.dangerSurface, borderColor: theme.colors.danger }]}>
             <Text style={[s.conflictBannerText, { color: theme.colors.danger, fontFamily: theme.fonts.body }]}>
               ⚠️ You have conflicting tasks today. Review the highlighted items.
@@ -389,85 +578,56 @@ export default function TodayScreen() {
           </View>
         )}
 
-        {todaySchedule.length > 0 && <ScheduleSummary schedule={todaySchedule} />}
+        {/* Summary pills — today only */}
+        {isViewingToday && todaySchedule.length > 0 && <ScheduleSummary schedule={todaySchedule} />}
 
-        <View style={s.timeline}>
-          {!isScheduleBuilt || todaySchedule.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <>
-              {/* Active scheduled tasks with current time indicator */}
-              {activeTasks.map((st, index) => {
-                const taskStartMins = timeToMins(st.instance.scheduledStart);
-                const taskEndMins = taskStartMins + st.task.duration;
-                const isNext = st === nextUpTask;
-
-                // Show time indicator before the first task that's in the future
-                const showTimeIndicator = index > 0 && !activeTasks[index - 1] &&
-                  taskStartMins > currentTimeMins;
-
-                return (
+        {/* Main content */}
+        {!isViewingToday ? (
+          <OtherDayView dateStr={viewDate} categories={categories} tasks={tasks} />
+        ) : (
+          <View style={s.timeline}>
+            {!isScheduleBuilt || todaySchedule.length === 0 ? (
+              <EmptyState isToday={true} />
+            ) : (
+              <>
+                {activeTasks.map((st) => (
                   <View key={st.instance.id}>
-                    <TaskCard
-                      scheduledTask={st}
-                      onPress={() => handleCardPress(st)}
-                      onCheckbox={() => handleCheckbox(st)}
-                      isNextUp={isNext}
-                    />
+                    <TaskCard scheduledTask={st} onPress={() => handleCardPress(st)}
+                      onCheckbox={() => handleCheckbox(st)} isNextUp={st === nextUpTask} isToday />
                   </View>
-                );
-              })}
+                ))}
+                {completedTasks.length > 0 && (
+                  <>
+                    <SectionDivider label="Completed" count={completedTasks.length}
+                      collapsed={completedCollapsed} onToggle={() => setCompletedCollapsed(c => !c)} />
+                    {!completedCollapsed && completedTasks.map(st => (
+                      <View key={st.instance.id}>
+                        <TaskCard scheduledTask={st} onPress={() => handleCardPress(st)} onCheckbox={() => handleCheckbox(st)} />
+                      </View>
+                    ))}
+                  </>
+                )}
+                {unscheduledTasks.length > 0 && (
+                  <>
+                    <SectionDivider label="Couldn't fit today" count={unscheduledTasks.length}
+                      collapsed={unscheduledCollapsed} onToggle={() => setUnscheduledCollapsed(c => !c)} />
+                    {!unscheduledCollapsed && unscheduledTasks.map(st => (
+                      <View key={st.instance.id}>
+                        <TaskCard scheduledTask={st} onPress={() => handleCardPress(st)} onCheckbox={() => handleCheckbox(st)} />
+                      </View>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+          </View>
+        )}
 
-              {/* Completed / skipped section */}
-              {completedTasks.length > 0 && (
-                <>
-                  <SectionDivider
-                    label="Completed"
-                    count={completedTasks.length}
-                    collapsed={completedCollapsed}
-                    onToggle={() => setCompletedCollapsed(c => !c)}
-                  />
-                  {!completedCollapsed && completedTasks.map(st => (
-                    <View key={st.instance.id}>
-                      <TaskCard scheduledTask={st} onPress={() => handleCardPress(st)} onCheckbox={() => handleCheckbox(st)} />
-                    </View>
-                  ))}
-                </>
-              )}
-
-              {/* Unscheduled tasks section */}
-              {unscheduledTasks.length > 0 && (
-                <>
-                  <SectionDivider
-                    label="Couldn't fit today"
-                    count={unscheduledTasks.length}
-                    collapsed={unscheduledCollapsed}
-                    onToggle={() => setUnscheduledCollapsed(c => !c)}
-                  />
-                  {!unscheduledCollapsed && unscheduledTasks.map(st => (
-                    <View key={st.instance.id}>
-                      <TaskCard scheduledTask={st} onPress={() => handleCardPress(st)} onCheckbox={() => handleCheckbox(st)} />
-                    </View>
-                  ))}
-                </>
-              )}
-            </>
-          )}
-        </View>
-
-        {/* Regenerate day button */}
-        {isScheduleBuilt && todaySchedule.length > 0 && (
-          <TouchableOpacity
-            onPress={handleRegenerate}
-            disabled={regenerating}
-            style={[s.regenerateBtn, {
-              backgroundColor: theme.colors.surfaceAlt,
-              borderColor: theme.colors.border,
-            }]}
-            accessibilityRole="button"
-            accessibilityLabel="Regenerate today's schedule"
-            accessibilityHint="Rebuilds your schedule from the current time"
-          >
+        {/* Regenerate — today only */}
+        {isViewingToday && isScheduleBuilt && todaySchedule.length > 0 && (
+          <TouchableOpacity onPress={handleRegenerate} disabled={regenerating}
+            style={[s.regenerateBtn, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+            accessibilityRole="button" accessibilityLabel="Regenerate today's schedule">
             <Text style={[s.regenerateBtnText, { color: theme.colors.textSecondary, fontFamily: theme.fonts.body }]}>
               {regenerating ? '⟳  Regenerating...' : '⟳  Regenerate day'}
             </Text>
@@ -486,19 +646,24 @@ export default function TodayScreen() {
         onSnooze={handleSnooze}
         onEdit={handleEdit}
         onDelete={handleDelete}
+        isToday={isViewingToday}
       />
     </SafeAreaView>
   );
 }
 
-// ─── STYLES ───────────────────────────────────────────────────────────────────
-
 const s = StyleSheet.create({
   screen: { flex: 1 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
   headerLeft: { flex: 1, marginRight: 16 },
   greeting: { fontSize: 13, marginBottom: 2 },
-  dateText: { fontSize: 22, lineHeight: 28 },
+  dateText: { fontSize: 26, lineHeight: 32 },
+  fullDate: { fontSize: 13, marginTop: 2 },
+  backToTodayBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1 },
+  backToTodayText: { fontSize: 13 },
+  dayNav: { flexDirection: 'row', borderTopWidth: 1, borderBottomWidth: 1, marginBottom: 12 },
+  dayNavBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', justifyContent: 'center', minHeight: 44, borderRadius: 0 },
+  dayNavBtnText: { fontSize: 13 },
   scoreRing: { width: 72, height: 72, borderRadius: 36, borderWidth: 3, alignItems: "center", justifyContent: "center" },
   scoreNumber: { fontSize: 22, lineHeight: 26 },
   scorePercent: { fontSize: 11, lineHeight: 14 },
@@ -510,6 +675,11 @@ const s = StyleSheet.create({
   summaryDot: { width: 6, height: 6, borderRadius: 3 },
   summaryText: { fontSize: 12 },
   timeline: { paddingHorizontal: 16, gap: 8 },
+  daySummaryCard: { borderRadius: 12, borderWidth: 1, padding: 16, alignItems: 'center', marginBottom: 8 },
+  daySummaryScore: { fontSize: 36, lineHeight: 40 },
+  daySummaryText: { fontSize: 14, marginTop: 4 },
+  previewBanner: { borderRadius: 10, borderWidth: 1, padding: 12, marginHorizontal: 0, marginBottom: 8 },
+  previewBannerText: { fontSize: 13 },
   taskCard: { flexDirection: "row", alignItems: "center", borderRadius: 12, borderWidth: 1, borderLeftWidth: 4, padding: 12, gap: 12, minHeight: 72 },
   timeColumn: { width: 44, alignItems: "center" },
   taskTime: { fontSize: 13, lineHeight: 17 },

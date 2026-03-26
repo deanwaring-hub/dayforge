@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import {
@@ -12,22 +12,49 @@ import { ThemeProvider, useTheme } from "./src/theme/ThemeContext";
 import TabNavigator from "./src/navigation/TabNavigator";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { initialiseDatabase } from "./src/database/db";
-import { useDayForgeStore } from "./src/store/useDayForgeStore";
+import { useDayForgeStore, DayForgeProvider } from "./src/store/useDayForgeStore";
 import OnboardingScreen from "./src/screens/OnboardingScreen";
-import { DayForgeProvider } from './src/store/useDayForgeStore';
+import { View } from "react-native";
+
 SplashScreen.preventAutoHideAsync();
 
 function InnerApp() {
-  const { isDark } = useTheme();
+  const { isDark, theme } = useTheme();
   const { isOnboarded, isLoading, initialise } = useDayForgeStore();
+  const [dbReady, setDbReady] = useState(false);
 
   useEffect(() => {
-    initialiseDatabase()
-      .then(() => initialise())
-      .catch(console.error);
+    let mounted = true;
+
+    async function boot() {
+      try {
+        // Step 1: initialise database fully before anything else
+        await initialiseDatabase();
+        if (!mounted) return;
+
+        // Step 2: load user/tasks/categories into store
+        await initialise();
+        if (!mounted) return;
+
+        setDbReady(true);
+      } catch (error: any) {
+        console.error("Boot error:", error?.message ?? error);
+        if (mounted) {
+          // Still mark ready so user isn't stuck on blank screen
+          setDbReady(true);
+        }
+      }
+    }
+
+    boot();
+    return () => { mounted = false; };
   }, []);
 
-  if (isLoading) return null;
+  // Hold render until database is confirmed ready
+  // Prevents isOnboarded flash-to-false on APK builds
+  if (!dbReady || isLoading) {
+    return <View style={{ flex: 1, backgroundColor: theme.colors.background }} />;
+  }
 
   return (
     <>
