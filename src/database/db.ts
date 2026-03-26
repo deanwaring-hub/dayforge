@@ -153,56 +153,74 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
 }
 
 async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
-  // Standard migrations — single statement each, safe to use execAsync
-  const migrations: { version: number; sql: string }[] = [
-    {
-      version: 1,
-      sql: `
-        INSERT OR IGNORE INTO categories (id, label, color, notification_minutes_before, sort_order) VALUES
-          ('appointments', 'Appointments', '#5B8AF0', 60, 1),
-          ('races',        'Races',        '#F87171', 30, 2),
-          ('training',     'Training',     '#43D9AD', 30, 3),
-          ('study',        'Study',        '#A78BFA', 15, 4),
-          ('chores',       'Household Chores', '#FBBF24', 15, 5),
-          ('medical',      'Medical',      '#F97316', 60, 6),
-          ('projects',     'Projects',     '#EC4899', 15, 7),
-          ('personal',     'Personal',     '#8892B0', 15, 8);
-      `,
-    },
-    {
-      version: 2,
-      sql: `
-        INSERT OR IGNORE INTO users (id, day_start, day_end, theme, onboarded)
-        VALUES (1, '06:00', '21:00', 'slate', 0);
-      `,
-    },
-    {
-      version: 3,
-      sql: `ALTER TABLE task_instances ADD COLUMN has_conflict INTEGER NOT NULL DEFAULT 0;`,
-    },
-  ];
-
-  for (const migration of migrations) {
-    const already = await database.getFirstAsync<{ version: number }>(
-      "SELECT version FROM schema_migrations WHERE version = ?",
-      [migration.version],
+  // ── Migration 1 — seed default categories ────────────────────────────────
+  const v1 = await database.getFirstAsync<{ version: number }>(
+    "SELECT version FROM schema_migrations WHERE version = ?",
+    [1],
+  );
+  if (!v1) {
+    await database.execAsync(`
+      INSERT OR IGNORE INTO categories (id, label, color, notification_minutes_before, sort_order) VALUES
+        ('appointments', 'Appointments', '#5B8AF0', 60, 1),
+        ('races',        'Races',        '#F87171', 30, 2),
+        ('training',     'Training',     '#43D9AD', 30, 3),
+        ('study',        'Study',        '#A78BFA', 15, 4),
+        ('chores',       'Household Chores', '#FBBF24', 15, 5),
+        ('medical',      'Medical',      '#F97316', 60, 6),
+        ('projects',     'Projects',     '#EC4899', 15, 7),
+        ('personal',     'Personal',     '#8892B0', 15, 8);
+    `);
+    await database.runAsync(
+      "INSERT INTO schema_migrations (version) VALUES (?)",
+      [1],
     );
-    if (!already) {
-      await database.execAsync(migration.sql);
-      await database.runAsync(
-        "INSERT INTO schema_migrations (version) VALUES (?)",
-        [migration.version],
-      );
-      console.log(`Migration ${migration.version} applied.`);
-    }
+    console.log("Migration 1 applied.");
   }
 
-  // Migration 4 — demo tasks
+  // ── Migration 2 — seed default user ──────────────────────────────────────
+  const v2 = await database.getFirstAsync<{ version: number }>(
+    "SELECT version FROM schema_migrations WHERE version = ?",
+    [2],
+  );
+  if (!v2) {
+    await database.runAsync(
+      `INSERT OR IGNORE INTO users (id, day_start, day_end, theme, onboarded) VALUES (1, '06:00', '21:00', 'slate', 0)`,
+    );
+    await database.runAsync(
+      "INSERT INTO schema_migrations (version) VALUES (?)",
+      [2],
+    );
+    console.log("Migration 2 applied.");
+  }
+
+  // ── Migration 3 — add has_conflict column ────────────────────────────────
+  // Wrapped in try/catch because column may already exist on existing installs
+  const v3 = await database.getFirstAsync<{ version: number }>(
+    "SELECT version FROM schema_migrations WHERE version = ?",
+    [3],
+  );
+  if (!v3) {
+    try {
+      await database.runAsync(
+        `ALTER TABLE task_instances ADD COLUMN has_conflict INTEGER NOT NULL DEFAULT 0`,
+      );
+    } catch (e) {
+      // Column already exists — safe to ignore
+      console.log("Migration 3: has_conflict already exists, skipping ALTER.");
+    }
+    await database.runAsync(
+      "INSERT INTO schema_migrations (version) VALUES (?)",
+      [3],
+    );
+    console.log("Migration 3 applied.");
+  }
+
+  // ── Migration 4 — demo tasks ──────────────────────────────────────────────
   // Individual runAsync calls required for foreign key constraint reliability
   const v4 = await database.getFirstAsync<{ version: number }>(
-    "SELECT version FROM schema_migrations WHERE version = ?", [4]
+    "SELECT version FROM schema_migrations WHERE version = ?",
+    [4],
   );
-
   if (!v4) {
     const demoTasks = [
       `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t1', 'Team Meeting', 'appointments', 'fixed', 'high', 60, 10, '09:00', null, 0, 0, 1, 60, 1, datetime('now'), datetime('now'))`,
@@ -216,7 +234,6 @@ async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
       `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t9', 'Meal Prep', 'chores', 'optional', 'low', 45, 10, null, '17:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
       `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t10', 'Catch Up With Friends', 'personal', 'optional', 'normal', 30, 10, null, '19:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
     ];
-
     const demoRules = [
       `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r1', 'demo_t1', 'weekly', date('now'))`,
       `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r2', 'demo_t2', 'once', date('now'))`,
@@ -229,18 +246,57 @@ async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
       `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r9', 'demo_t9', 'weekly', date('now'))`,
       `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r10', 'demo_t10', 'weekly', date('now'))`,
     ];
-
     for (const sql of demoTasks) {
       await database.runAsync(sql);
     }
     for (const sql of demoRules) {
       await database.runAsync(sql);
     }
-
     await database.runAsync(
-      "INSERT INTO schema_migrations (version) VALUES (?)", [4]
+      "INSERT INTO schema_migrations (version) VALUES (?)",
+      [4],
     );
     console.log("Migration 4 applied.");
+  }
+
+  // ── Migration 5 — category task defaults ─────────────────────────────────
+  const v5 = await database.getFirstAsync<{ version: number }>(
+    "SELECT version FROM schema_migrations WHERE version = ?",
+    [5],
+  );
+  if (!v5) {
+    await database.runAsync(
+      `ALTER TABLE categories ADD COLUMN default_priority TEXT NOT NULL DEFAULT 'flexible'`,
+    );
+    await database.runAsync(
+      `ALTER TABLE categories ADD COLUMN default_priority_tier TEXT NOT NULL DEFAULT 'normal'`,
+    );
+    await database.runAsync(
+      `ALTER TABLE categories ADD COLUMN default_duration INTEGER NOT NULL DEFAULT 30`,
+    );
+    await database.runAsync(
+      `ALTER TABLE categories ADD COLUMN default_buffer_after INTEGER NOT NULL DEFAULT 10`,
+    );
+    await database.runAsync(
+      `ALTER TABLE categories ADD COLUMN default_notification_enabled INTEGER NOT NULL DEFAULT 1`,
+    );
+
+    // Backfill defaults on existing rows
+    await database.runAsync(`
+    UPDATE categories SET
+      default_priority = 'flexible',
+      default_priority_tier = 'normal',
+      default_duration = 30,
+      default_buffer_after = 10,
+      default_notification_enabled = 1
+    WHERE default_priority IS NULL
+  `);
+
+    await database.runAsync(
+      "INSERT INTO schema_migrations (version) VALUES (?)",
+      [5],
+    );
+    console.log("Migration 5 applied.");
   }
 }
 

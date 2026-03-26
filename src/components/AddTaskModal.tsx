@@ -67,7 +67,7 @@ const DEFAULT_FORM: FormState = {
   categoryId: "",
   priority: "flexible",
   duration: 30,
-  frequency: "once",
+  frequency: "daily",
   time: "09:00",
   preferredTime: "09:00",
   earliestStart: "06:00",
@@ -82,7 +82,9 @@ const DEFAULT_FORM: FormState = {
   notes: "",
   customDays: [],
   startDate: todayString(),
-  endDate: "",
+  endDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1))
+    .toISOString()
+    .slice(0, 10),
   occurrences: 0,
   showExpanded: false,
 };
@@ -103,10 +105,6 @@ const MONTHS = [
   "Nov",
   "Dec",
 ];
-
-function isAppointmentCategory(categoryId: string): boolean {
-  return ["appointments", "medical"].includes(categoryId);
-}
 
 function FieldLabel({
   label,
@@ -506,21 +504,21 @@ export default function AddTaskModal({
       };
 
       if (isEditMode && taskToEdit) {
-        await editTask(taskToEdit.id, taskData);
-      } else {
-        await addTask(taskData, {
+        await editTask(taskToEdit.id, taskData, {
           frequency: form.frequency,
           startDate: form.startDate || todayString(),
           endDate: form.endDate || undefined,
-          occurrences: form.occurrences > 0 ? form.occurrences : undefined,
           customDays: form.frequency === "custom" ? form.customDays : undefined,
           monthlyDay:
-            form.frequency === "monthly" ? new Date().getDate() : undefined,
+            form.frequency === "monthly"
+              ? new Date(form.startDate).getDate()
+              : undefined,
         });
       }
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Save task error:", error);
+      Alert.alert("Save failed", error?.message ?? String(error));
     } finally {
       setSaving(false);
     }
@@ -545,8 +543,7 @@ export default function AddTaskModal({
     await performSave();
   };
 
-  const showTravel =
-    isAppointmentCategory(form.categoryId) || form.priority === "fixed";
+  const showTravel = form.priority === "fixed";
 
   return (
     <Modal
