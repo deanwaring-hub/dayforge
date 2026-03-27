@@ -514,6 +514,18 @@ export default function AddTaskModal({
               ? new Date(form.startDate).getDate()
               : undefined,
         });
+      } else {
+        await addTask(taskData, {
+          frequency: form.frequency,
+          startDate: form.startDate || todayString(),
+          endDate: form.endDate || undefined,
+          occurrences: form.occurrences > 0 ? form.occurrences : undefined,
+          customDays: form.frequency === "custom" ? form.customDays : undefined,
+          monthlyDay:
+            form.frequency === "monthly"
+              ? new Date(form.startDate).getDate()
+              : undefined,
+        });
       }
       onClose();
     } catch (error: any) {

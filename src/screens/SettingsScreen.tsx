@@ -14,7 +14,7 @@ import ProfileScreen from "./ProfileScreen";
 import NotificationsScreen from "./NotificationsScreen";
 import AboutScreen from "./AboutScreen";
 
-type ModalType = 'categories' | 'profile' | 'notifications' | 'about' | null;
+type ModalType = "categories" | "profile" | "notifications" | "about" | null;
 
 export default function SettingsScreen() {
   const { theme, themeName, setTheme } = useTheme();
@@ -32,13 +32,12 @@ export default function SettingsScreen() {
           style: "destructive",
           onPress: async () => {
             const db = getDatabase();
-            await db.execAsync(`
-              DELETE FROM task_instances;
-              DELETE FROM recurrence_exceptions;
-              DELETE FROM recurrence_rules;
-              DELETE FROM tasks;
-              DELETE FROM daily_scores;
-            `);
+            await db.runAsync(`DELETE FROM task_instances`);
+            await db.runAsync(`DELETE FROM recurrence_exceptions`);
+            await db.runAsync(`DELETE FROM recurrence_rules`);
+            await db.runAsync(`DELETE FROM tasks`);
+            await db.runAsync(`DELETE FROM daily_scores`);
+            await db.runAsync(`DELETE FROM schema_migrations WHERE version = 4`);
             await initialise();
           },
         },
@@ -57,14 +56,13 @@ export default function SettingsScreen() {
           style: "destructive",
           onPress: async () => {
             const db = getDatabase();
-            await db.execAsync(`
-              DELETE FROM task_instances;
-              DELETE FROM recurrence_exceptions;
-              DELETE FROM recurrence_rules;
-              DELETE FROM tasks;
-              DELETE FROM daily_scores;
-              DELETE FROM categories;
-            `);
+            await db.runAsync(`DELETE FROM task_instances`);
+            await db.runAsync(`DELETE FROM recurrence_exceptions`);
+            await db.runAsync(`DELETE FROM recurrence_rules`);
+            await db.runAsync(`DELETE FROM tasks`);
+            await db.runAsync(`DELETE FROM daily_scores`);
+            await db.runAsync(`DELETE FROM categories`);
+            await db.runAsync(`DELETE FROM schema_migrations WHERE version IN (1, 4, 5)`);
             await initialise();
           },
         },
@@ -73,10 +71,10 @@ export default function SettingsScreen() {
   };
 
   const NAV_ITEMS: { key: ModalType; title: string; sub: string }[] = [
-    { key: 'profile', title: 'Profile', sub: 'Day start/end, premium subscription' },
-    { key: 'notifications', title: 'Notifications', sub: 'Manage reminders and alerts' },
-    { key: 'categories', title: 'Categories', sub: 'Add, edit and set task defaults' },
-    { key: 'about', title: 'About', sub: 'Version, privacy policy, links' },
+    { key: "profile",       title: "Profile",       sub: "Day start/end, premium subscription" },
+    { key: "notifications", title: "Notifications", sub: "Manage reminders and alerts" },
+    { key: "categories",    title: "Categories",    sub: "Add, edit and set task defaults" },
+    { key: "about",         title: "About",         sub: "Version, privacy policy, links" },
   ];
 
   return (
@@ -103,7 +101,9 @@ export default function SettingsScreen() {
               const isSelected = themeName === key;
               const isFree = freeThemes.includes(key);
               return (
-                <TouchableOpacity key={key} onPress={() => setTheme(key)}
+                <TouchableOpacity
+                  key={key}
+                  onPress={() => setTheme(key)}
                   style={[s.themeCard, {
                     backgroundColor: t.colors.background,
                     borderColor: isSelected ? theme.colors.accent : theme.colors.border,
@@ -136,8 +136,9 @@ export default function SettingsScreen() {
         <Text style={[s.sectionLabel, { color: theme.colors.textMuted, fontFamily: theme.fonts.body }]}>
           APP
         </Text>
-        {NAV_ITEMS.map(item => (
-          <TouchableOpacity key={item.key}
+        {NAV_ITEMS.map((item) => (
+          <TouchableOpacity
+            key={item.key}
             onPress={() => setActiveModal(item.key)}
             style={[s.card, s.navCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
             accessibilityRole="button"
@@ -164,21 +165,24 @@ export default function SettingsScreen() {
           <Text style={[s.cardTitle, { color: theme.colors.danger, fontFamily: theme.fonts.heading, marginBottom: 12 }]}>
             Danger Zone
           </Text>
-          <TouchableOpacity onPress={() => updateUserSettings({ onboarded: false })}
+          <TouchableOpacity
+            onPress={() => updateUserSettings({ onboarded: false })}
             style={[s.devBtn, { backgroundColor: theme.colors.dangerSurface, borderColor: theme.colors.danger }]}
             accessibilityRole="button" accessibilityLabel="Reset onboarding">
             <Text style={{ color: theme.colors.danger, fontFamily: theme.fonts.body, fontSize: theme.fontSizes.md }}>
               Reset Onboarding
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleClearTasks}
+          <TouchableOpacity
+            onPress={handleClearTasks}
             style={[s.devBtn, { backgroundColor: theme.colors.dangerSurface, borderColor: theme.colors.danger }]}
             accessibilityRole="button" accessibilityLabel="Clear all tasks">
             <Text style={{ color: theme.colors.danger, fontFamily: theme.fonts.body, fontSize: theme.fontSizes.md }}>
               Clear All Tasks
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleClearCategories}
+          <TouchableOpacity
+            onPress={handleClearCategories}
             style={[s.devBtn, { backgroundColor: theme.colors.dangerSurface, borderColor: theme.colors.danger, marginBottom: 0 }]}
             accessibilityRole="button" accessibilityLabel="Clear all categories">
             <Text style={{ color: theme.colors.danger, fontFamily: theme.fonts.body, fontSize: theme.fontSizes.md }}>
@@ -190,16 +194,16 @@ export default function SettingsScreen() {
       </ScrollView>
 
       {/* Modals */}
-      <Modal visible={activeModal === 'categories'} animationType="slide" onRequestClose={() => setActiveModal(null)}>
+      <Modal visible={activeModal === "categories"} animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <CategoriesScreen onClose={() => setActiveModal(null)} />
       </Modal>
-      <Modal visible={activeModal === 'profile'} animationType="slide" onRequestClose={() => setActiveModal(null)}>
+      <Modal visible={activeModal === "profile"} animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <ProfileScreen onClose={() => setActiveModal(null)} />
       </Modal>
-      <Modal visible={activeModal === 'notifications'} animationType="slide" onRequestClose={() => setActiveModal(null)}>
+      <Modal visible={activeModal === "notifications"} animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <NotificationsScreen onClose={() => setActiveModal(null)} />
       </Modal>
-      <Modal visible={activeModal === 'about'} animationType="slide" onRequestClose={() => setActiveModal(null)}>
+      <Modal visible={activeModal === "about"} animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <AboutScreen onClose={() => setActiveModal(null)} />
       </Modal>
 
@@ -214,7 +218,7 @@ const s = StyleSheet.create({
   sectionLabel: { fontSize: 11, letterSpacing: 1.5, marginBottom: 10, marginLeft: 4 },
   card: { borderRadius: 12, borderWidth: 1, padding: 16, marginBottom: 12 },
   navCard: { padding: 16 },
-  navCardInner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  navCardInner: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   navArrow: { fontSize: 24 },
   cardTitle: { fontSize: 17, marginBottom: 4 },
   cardSub: { fontSize: 13, marginBottom: 16, opacity: 0.8 },
