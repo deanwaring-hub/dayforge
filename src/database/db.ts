@@ -1,6 +1,6 @@
 // src/database/db.ts
 // DayForge database initialisation
-// PRAGMA statements run individually for Android APK compatibility
+// Uses runAsync exclusively — execAsync is unreliable on Android production builds
 
 import * as SQLite from "expo-sqlite";
 
@@ -16,8 +16,6 @@ export function getDatabase(): SQLite.SQLiteDatabase {
 export async function initialiseDatabase(): Promise<void> {
   const database = getDatabase();
 
-  // Run PRAGMAs individually — execAsync with multiple statements
-  // can fail silently on Android production builds
   await database.runAsync("PRAGMA journal_mode = WAL");
   await database.runAsync("PRAGMA foreign_keys = ON");
 
@@ -26,7 +24,8 @@ export async function initialiseDatabase(): Promise<void> {
 }
 
 async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
-  await database.execAsync(`
+
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY DEFAULT 1,
       day_start TEXT NOT NULL DEFAULT '06:00',
@@ -35,10 +34,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       default_buffer INTEGER NOT NULL DEFAULT 10,
       onboarded INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS categories (
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL,
@@ -47,10 +46,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       notification_minutes_before INTEGER NOT NULL DEFAULT 60,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -73,10 +72,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (category_id) REFERENCES categories(id)
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS recurrence_rules (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL UNIQUE,
@@ -90,10 +89,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       monthly_day INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS recurrence_exceptions (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -102,10 +101,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
       UNIQUE(task_id, exception_date)
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS task_instances (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -123,10 +122,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
       UNIQUE(task_id, date)
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS daily_scores (
       id TEXT PRIMARY KEY,
       date TEXT NOT NULL UNIQUE,
@@ -141,161 +140,129 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       score REAL NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    )
   `);
 
-  await database.execAsync(`
+  await database.runAsync(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
       run_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    )
   `);
 }
 
 async function runMigrations(database: SQLite.SQLiteDatabase): Promise<void> {
+
   // ── Migration 1 — seed default categories ────────────────────────────────
   const v1 = await database.getFirstAsync<{ version: number }>(
-    "SELECT version FROM schema_migrations WHERE version = ?",
-    [1],
+    "SELECT version FROM schema_migrations WHERE version = ?", [1]
   );
   if (!v1) {
-    await database.execAsync(`
-      INSERT OR IGNORE INTO categories (id, label, color, notification_minutes_before, sort_order) VALUES
-        ('appointments', 'Appointments', '#5B8AF0', 60, 1),
-        ('races',        'Races',        '#F87171', 30, 2),
-        ('training',     'Training',     '#43D9AD', 30, 3),
-        ('study',        'Study',        '#A78BFA', 15, 4),
-        ('chores',       'Household Chores', '#FBBF24', 15, 5),
-        ('medical',      'Medical',      '#F97316', 60, 6),
-        ('projects',     'Projects',     '#EC4899', 15, 7),
-        ('personal',     'Personal',     '#8892B0', 15, 8);
-    `);
-    await database.runAsync(
-      "INSERT INTO schema_migrations (version) VALUES (?)",
-      [1],
-    );
+    const defaultCategories = [
+      ["appointments", "Appointments", "#5B8AF0", 60, 1],
+      ["races",        "Races",        "#F87171", 30, 2],
+      ["training",     "Training",     "#43D9AD", 30, 3],
+      ["study",        "Study",        "#A78BFA", 15, 4],
+      ["chores",       "Household Chores", "#FBBF24", 15, 5],
+      ["medical",      "Medical",      "#F97316", 60, 6],
+      ["projects",     "Projects",     "#EC4899", 15, 7],
+      ["personal",     "Personal",     "#8892B0", 15, 8],
+    ];
+    for (const [id, label, color, mins, order] of defaultCategories) {
+      await database.runAsync(
+        `INSERT OR IGNORE INTO categories (id, label, color, notification_minutes_before, sort_order) VALUES (?, ?, ?, ?, ?)`,
+        [id, label, color, mins, order]
+      );
+    }
+    await database.runAsync("INSERT INTO schema_migrations (version) VALUES (?)", [1]);
     console.log("Migration 1 applied.");
   }
 
   // ── Migration 2 — seed default user ──────────────────────────────────────
   const v2 = await database.getFirstAsync<{ version: number }>(
-    "SELECT version FROM schema_migrations WHERE version = ?",
-    [2],
+    "SELECT version FROM schema_migrations WHERE version = ?", [2]
   );
   if (!v2) {
     await database.runAsync(
-      `INSERT OR IGNORE INTO users (id, day_start, day_end, theme, onboarded) VALUES (1, '06:00', '21:00', 'slate', 0)`,
+      `INSERT OR IGNORE INTO users (id, day_start, day_end, theme, onboarded) VALUES (1, '06:00', '21:00', 'slate', 0)`
     );
-    await database.runAsync(
-      "INSERT INTO schema_migrations (version) VALUES (?)",
-      [2],
-    );
+    await database.runAsync("INSERT INTO schema_migrations (version) VALUES (?)", [2]);
     console.log("Migration 2 applied.");
   }
 
   // ── Migration 3 — add has_conflict column ────────────────────────────────
-  // Wrapped in try/catch because column may already exist on existing installs
   const v3 = await database.getFirstAsync<{ version: number }>(
-    "SELECT version FROM schema_migrations WHERE version = ?",
-    [3],
+    "SELECT version FROM schema_migrations WHERE version = ?", [3]
   );
   if (!v3) {
     try {
       await database.runAsync(
-        `ALTER TABLE task_instances ADD COLUMN has_conflict INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE task_instances ADD COLUMN has_conflict INTEGER NOT NULL DEFAULT 0`
       );
     } catch (e) {
-      // Column already exists — safe to ignore
-      console.log("Migration 3: has_conflict already exists, skipping ALTER.");
+      console.log("Migration 3: has_conflict already exists, skipping.");
     }
-    await database.runAsync(
-      "INSERT INTO schema_migrations (version) VALUES (?)",
-      [3],
-    );
+    await database.runAsync("INSERT INTO schema_migrations (version) VALUES (?)", [3]);
     console.log("Migration 3 applied.");
   }
 
   // ── Migration 4 — demo tasks ──────────────────────────────────────────────
-  // Individual runAsync calls required for foreign key constraint reliability
   const v4 = await database.getFirstAsync<{ version: number }>(
-    "SELECT version FROM schema_migrations WHERE version = ?",
-    [4],
+    "SELECT version FROM schema_migrations WHERE version = ?", [4]
   );
   if (!v4) {
     const demoTasks = [
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t1', 'Team Meeting', 'appointments', 'fixed', 'high', 60, 10, '09:00', null, 0, 0, 1, 60, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t2', 'Physio Appointment', 'medical', 'fixed', 'high', 45, 10, '14:00', null, 20, 20, 1, 60, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t3', 'School Run', 'chores', 'fixed', 'normal', 30, 10, '15:30', null, 0, 0, 1, 15, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t4', 'Morning Run', 'training', 'flexible', 'high', 60, 10, null, '07:00', 0, 0, 1, 30, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t5', 'Project Review', 'projects', 'flexible', 'normal', 45, 10, null, '10:30', 0, 0, 1, 15, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t6', 'Study Session', 'study', 'flexible', 'normal', 90, 10, null, '11:00', 0, 0, 1, 15, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t7', 'Evening Read', 'personal', 'optional', 'normal', 30, 10, null, '20:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t8', 'Inbox Zero', 'projects', 'optional', 'low', 20, 10, null, '08:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t9', 'Meal Prep', 'chores', 'optional', 'low', 45, 10, null, '17:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
-      `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at) VALUES ('demo_t10', 'Catch Up With Friends', 'personal', 'optional', 'normal', 30, 10, null, '19:00', 0, 0, 0, 15, 1, datetime('now'), datetime('now'))`,
+      ["demo_t1", "Team Meeting",          "appointments", "fixed",    "high",   60, 10, "09:00", null,    0,  0,  1, 60],
+      ["demo_t2", "Physio Appointment",    "medical",      "fixed",    "high",   45, 10, "14:00", null,    20, 20, 1, 60],
+      ["demo_t3", "School Run",            "chores",       "fixed",    "normal", 30, 10, "15:30", null,    0,  0,  1, 15],
+      ["demo_t4", "Morning Run",           "training",     "flexible", "high",   60, 10, null,    "07:00", 0,  0,  1, 30],
+      ["demo_t5", "Project Review",        "projects",     "flexible", "normal", 45, 10, null,    "10:30", 0,  0,  1, 15],
+      ["demo_t6", "Study Session",         "study",        "flexible", "normal", 90, 10, null,    "11:00", 0,  0,  1, 15],
+      ["demo_t7", "Evening Read",          "personal",     "optional", "normal", 30, 10, null,    "20:00", 0,  0,  0, 15],
+      ["demo_t8", "Inbox Zero",            "projects",     "optional", "low",    20, 10, null,    "08:00", 0,  0,  0, 15],
+      ["demo_t9", "Meal Prep",             "chores",       "optional", "low",    45, 10, null,    "17:00", 0,  0,  0, 15],
+      ["demo_t10","Catch Up With Friends", "personal",     "optional", "normal", 30, 10, null,    "19:00", 0,  0,  0, 15],
     ];
+    for (const [id, name, catId, priority, tier, duration, buffer, time, pref, tTo, tFrom, notif, notifMins] of demoTasks) {
+      await database.runAsync(
+        `INSERT OR IGNORE INTO tasks (id, name, category_id, priority, priority_tier, duration, buffer_after, time, preferred_time, travel_to, travel_from, notification_enabled, notification_minutes_before, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`,
+        [id, name, catId, priority, tier, duration, buffer, time, pref, tTo, tFrom, notif, notifMins]
+      );
+    }
     const demoRules = [
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r1', 'demo_t1', 'weekly', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r2', 'demo_t2', 'once', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r3', 'demo_t3', 'weekdays', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r4', 'demo_t4', 'daily', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r5', 'demo_t5', 'weekly', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r6', 'demo_t6', 'weekdays', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r7', 'demo_t7', 'daily', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r8', 'demo_t8', 'daily', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r9', 'demo_t9', 'weekly', date('now'))`,
-      `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES ('demo_r10', 'demo_t10', 'weekly', date('now'))`,
+      ["demo_r1",  "demo_t1",  "weekly"],
+      ["demo_r2",  "demo_t2",  "once"],
+      ["demo_r3",  "demo_t3",  "weekdays"],
+      ["demo_r4",  "demo_t4",  "daily"],
+      ["demo_r5",  "demo_t5",  "weekly"],
+      ["demo_r6",  "demo_t6",  "weekdays"],
+      ["demo_r7",  "demo_t7",  "daily"],
+      ["demo_r8",  "demo_t8",  "daily"],
+      ["demo_r9",  "demo_t9",  "weekly"],
+      ["demo_r10", "demo_t10", "weekly"],
     ];
-    for (const sql of demoTasks) {
-      await database.runAsync(sql);
+    for (const [id, taskId, freq] of demoRules) {
+      await database.runAsync(
+        `INSERT OR IGNORE INTO recurrence_rules (id, task_id, frequency, start_date) VALUES (?, ?, ?, date('now'))`,
+        [id, taskId, freq]
+      );
     }
-    for (const sql of demoRules) {
-      await database.runAsync(sql);
-    }
-    await database.runAsync(
-      "INSERT INTO schema_migrations (version) VALUES (?)",
-      [4],
-    );
+    await database.runAsync("INSERT INTO schema_migrations (version) VALUES (?)", [4]);
     console.log("Migration 4 applied.");
   }
 
   // ── Migration 5 — category task defaults ─────────────────────────────────
   const v5 = await database.getFirstAsync<{ version: number }>(
-    "SELECT version FROM schema_migrations WHERE version = ?",
-    [5],
+    "SELECT version FROM schema_migrations WHERE version = ?", [5]
   );
   if (!v5) {
-    await database.runAsync(
-      `ALTER TABLE categories ADD COLUMN default_priority TEXT NOT NULL DEFAULT 'flexible'`,
-    );
-    await database.runAsync(
-      `ALTER TABLE categories ADD COLUMN default_priority_tier TEXT NOT NULL DEFAULT 'normal'`,
-    );
-    await database.runAsync(
-      `ALTER TABLE categories ADD COLUMN default_duration INTEGER NOT NULL DEFAULT 30`,
-    );
-    await database.runAsync(
-      `ALTER TABLE categories ADD COLUMN default_buffer_after INTEGER NOT NULL DEFAULT 10`,
-    );
-    await database.runAsync(
-      `ALTER TABLE categories ADD COLUMN default_notification_enabled INTEGER NOT NULL DEFAULT 1`,
-    );
-
-    // Backfill defaults on existing rows
-    await database.runAsync(`
-    UPDATE categories SET
-      default_priority = 'flexible',
-      default_priority_tier = 'normal',
-      default_duration = 30,
-      default_buffer_after = 10,
-      default_notification_enabled = 1
-    WHERE default_priority IS NULL
-  `);
-
-    await database.runAsync(
-      "INSERT INTO schema_migrations (version) VALUES (?)",
-      [5],
-    );
+    try { await database.runAsync(`ALTER TABLE categories ADD COLUMN default_priority TEXT NOT NULL DEFAULT 'flexible'`); } catch (e) {}
+    try { await database.runAsync(`ALTER TABLE categories ADD COLUMN default_priority_tier TEXT NOT NULL DEFAULT 'normal'`); } catch (e) {}
+    try { await database.runAsync(`ALTER TABLE categories ADD COLUMN default_duration INTEGER NOT NULL DEFAULT 30`); } catch (e) {}
+    try { await database.runAsync(`ALTER TABLE categories ADD COLUMN default_buffer_after INTEGER NOT NULL DEFAULT 10`); } catch (e) {}
+    try { await database.runAsync(`ALTER TABLE categories ADD COLUMN default_notification_enabled INTEGER NOT NULL DEFAULT 1`); } catch (e) {}
+    await database.runAsync("INSERT INTO schema_migrations (version) VALUES (?)", [5]);
     console.log("Migration 5 applied.");
   }
 }
