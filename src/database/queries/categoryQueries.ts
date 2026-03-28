@@ -141,11 +141,21 @@ export async function updateCategory(
 
 export async function deleteCategory(id: string): Promise<void> {
   const db = getDatabase();
-  await db.runAsync('DELETE FROM categories WHERE id = ?', [id]);
+  // Delete tasks in this category first to avoid foreign key constraint failures
+  await db.runAsync(
+    `DELETE FROM task_instances WHERE task_id IN (SELECT id FROM tasks WHERE category_id = ?)`, [id]
+  );
+  await db.runAsync(
+    `DELETE FROM recurrence_exceptions WHERE task_id IN (SELECT id FROM tasks WHERE category_id = ?)`, [id]
+  );
+  await db.runAsync(
+    `DELETE FROM recurrence_rules WHERE task_id IN (SELECT id FROM tasks WHERE category_id = ?)`, [id]
+  );
+  await db.runAsync(`DELETE FROM tasks WHERE category_id = ?`, [id]);
+  await db.runAsync(`DELETE FROM categories WHERE id = ?`, [id]);
 }
 
 // ─── COLOUR PALETTE ──────────────────────────────────────────────────────────
-// 12 options shown in the category colour picker
 
 export const CATEGORY_COLOURS = [
   '#5B8AF0', // Blue
@@ -160,15 +170,4 @@ export const CATEGORY_COLOURS = [
   '#60A5FA', // Sky
   '#F59E0B', // Yellow
   '#EF4444', // Crimson
-];
-
-export const DEFAULT_CATEGORIES = [
-  { id: 'appointments', label: 'Appointments', color: '#5B8AF0' },
-  { id: 'races', label: 'Races', color: '#F87171' },
-  { id: 'training', label: 'Training', color: '#43D9AD' },
-  { id: 'study', label: 'Study', color: '#A78BFA' },
-  { id: 'chores', label: 'Household Chores', color: '#FBBF24' },
-  { id: 'medical', label: 'Medical', color: '#F97316' },
-  { id: 'projects', label: 'Projects', color: '#EC4899' },
-  { id: 'personal', label: 'Personal', color: '#8892B0' },
 ];

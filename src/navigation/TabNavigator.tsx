@@ -2,6 +2,7 @@
 // Bottom tab navigation for DayForge
 // Centre tab opens Add Task modal sheet
 // Exports openEditTaskModal for use from TodayScreen
+// Auto-creates General category if all categories deleted
 
 import React, { useState, useEffect } from 'react';
 import { View, TouchableOpacity, StyleSheet, Text } from 'react-native';
@@ -15,9 +16,9 @@ import DashboardScreen from '../screens/DashboardScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import AddTaskModal from '../components/AddTaskModal';
 import type { Task } from '../database/queries/taskQueries';
+import { useDayForgeStore } from '../store/useDayForgeStore';
 
 // ─── EDIT TASK EVENT ──────────────────────────────────────────────────────────
-// Simple callback pattern to open the edit modal from anywhere
 
 type EditTaskCallback = (task: Task) => void;
 let _editTaskCallback: EditTaskCallback | null = null;
@@ -72,10 +73,10 @@ function TabIcon({ label, focused, color, isAdd = false }: {
 function CustomTabBar({ state, descriptors, navigation }: any) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const { categories, addCategory } = useDayForgeStore();
   const [addTaskVisible, setAddTaskVisible] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
 
-  // Register the edit callback
   useEffect(() => {
     _editTaskCallback = (task: Task) => {
       setEditingTask(task);
@@ -83,6 +84,22 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
     };
     return () => { _editTaskCallback = null; };
   }, []);
+
+  const handleOpenAddTask = async () => {
+    // If no categories exist, create General before opening the form
+    if (categories.length === 0) {
+      await addCategory({
+        label: 'General',
+        color: '#8892B0',
+        defaultPriority: 'flexible',
+        defaultPriorityTier: 'normal',
+        defaultDuration: 30,
+        defaultBufferAfter: 10,
+        defaultNotificationEnabled: true,
+      });
+    }
+    setAddTaskVisible(true);
+  };
 
   const handleCloseModal = () => {
     setAddTaskVisible(false);
@@ -105,7 +122,7 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
           const label = route.name === 'AddTask' ? 'Add' : route.name;
 
           const onPress = () => {
-            if (isAdd) { setAddTaskVisible(true); return; }
+            if (isAdd) { handleOpenAddTask(); return; }
             const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
             if (!focused && !event.defaultPrevented) { navigation.navigate(route.name); }
           };
